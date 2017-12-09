@@ -21,15 +21,20 @@ Built for **Debian** based systems, **Mac OSX**, and **Windows 10** using the la
 
 See **[documentation](http://sjsu-dev.readthedocs.io/en/latest/?badge=latest)** for a full tutorial.
 
-## Contrib
+## Original Contrib
 * [Preet Kang](http://www.socialledge.com/sjsu/index.php?title=Main_Page): Original creator of the SJDev development framework.
-* [Khalil Estell](http://kammce.io): Creator of the Linux port of SJDev and maintainer of this repo.
+* [Khalil Estell](http://kammce.io): Creator of the Linux port of SJDev and maintainer of the original version (this is a private duplicate of the original public forked repo located at https://github.com/kammce/SJSU-Dev).
 * [Kai Wetlesen](https://github.com/kaiwetlesen): Contributed Mac OS X port and development environment improvements.
 * [Anahit Sarao](https://github.com/s3nu): Major updates to initial Mac and Linux ports.
 
 ### Special Credits
 * **Mikko Bayabo**: Windows surface destructive testing
 * **WSL testing**: Sameer Azer, Aaron Moffit, Ryan Lucus
+
+### Private Fork Contributors
+* [Rolando Javier](https://github.com/rjavier441): An owner and maintainer of this private fork for the CMPE 146 MP3 Player Project
+* [Delwin Lei](https://github.com/deppityduo): An owner and maintainer of this private fork for the CMPE 146 MP3 Player Project
+* [Zoey Feng](https://github.com/ZiyiFeng-SJSU): An owner and maintainer of this private fork for the CMPE 146 MP3 Player Project
 
 ## Change Log
 
