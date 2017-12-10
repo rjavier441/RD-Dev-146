@@ -40,6 +40,12 @@
 #include "adc0.h"       // ADC0 api
 #include "keypad/keypad.h"
 
+//Delwin's includes
+#include "ssp0.h"       //sends codec song data
+#include "ssp1.h"       //maybe to speak to lcd?
+#include "ff.h"         //file access fatfs
+#include <stdio.h>      //printf
+
 #define DBG_KEYPAD 1
 
 FIL file;
