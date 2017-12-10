@@ -42,8 +42,124 @@
 
 #define DBG_KEYPAD 1
 
+FIL file;
+
+TaskHandle_t xinitialize = NULL;
+TaskHandle_t xplay_music = NULL;
+TaskHandle_t xbuttons = NULL;
+
 TaskHandle_t xHandleKeypadRead = NULL;
 char last_key = '\0';
+
+void initialize(void *p)
+{
+    //XDCS
+    LPC_GPIO1->FIODIR |= (1 << 19);
+
+    //XCS
+    LPC_GPIO1->FIODIR |= (1 << 20);
+    LPC_GPIO1->FIOSET = (1 << 20);
+
+    //RST
+    LPC_GPIO1->FIODIR |= (1 << 22);
+
+    //DREQ
+    LPC_GPIO1->FIODIR &= ~(1 << 23);
+
+    LPC_GPIO1->FIOCLR = (1 << 22);
+    LPC_GPIO1->FIOSET = (1 << 22);
+
+    ssp0_init(0);
+
+    static bool stop_run = false;
+
+    char* pFilename = "1:Despasito.mp3";
+    unsigned int bytesRead = 0;
+
+    if(!stop_run)
+    {
+        if(LPC_GPIO1->FIOPIN & (1 << 20))
+        {
+            // printf("XCS is high.\n");
+        }
+        else 
+        {
+            // printf("XCS is low.\n");
+        }
+
+        if(LPC_GPIO1->FIOPIN & (1 << 23))
+        {
+            LPC_GPIO1->FIOCLR = (1 << 20);
+
+            // printf("Reading from MODE register");
+
+            ssp0_exchange_byte(0x02);
+            ssp0_exchange_byte(0x03);
+            char b2 = ssp0_exchange_byte(0xf8);
+            char b3 = ssp0_exchange_byte(0x00);
+
+            // printf("%X%X\n", b2, b3);
+            LPC_GPIO1->FIOSET = (1 << 20);
+        }
+
+
+        if(LPC_GPIO1->FIOPIN & (1 << 23))
+        {
+            LPC_GPIO1->FIOCLR = (1 << 20);
+            // printf("Writing to MODE register\n");
+            
+            ssp0_exchange_byte(0x02);
+            ssp0_exchange_byte(0x00);
+            ssp0_exchange_byte(0x48);
+            ssp0_exchange_byte(0x40);
+
+            LPC_GPIO1->FIOSET = (1 << 20);
+        }
+
+        stop_run = true;
+
+        //SD read
+        
+
+        f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ);
+    }
+
+    vTaskSuspend(NULL);
+
+}
+
+void play_music(void *p)
+{
+    while(1)
+    {
+        if(LPC_GPIO1->FIOPIN & (1 << 23))
+        {
+            static uint32_t offset = 0;
+            char buffer[32] = {0};
+            static int send_this = 0;
+            static int put_here = 0;
+            unsigned int bytesRead = 0;
+    
+            f_read(&file, &buffer, 32, &bytesRead);
+            if(bytesRead < 32)
+            {
+                f_close(&file);
+            }
+            
+            offset = offset + 32;
+
+            LPC_GPIO1->FIOCLR = (1 << 19);
+    
+            for(int i = 0; i < 32; i++)
+            {
+            ssp0_exchange_byte(buffer[i]);
+            }
+    
+            LPC_GPIO1->FIOSET = (1 << 19);
+        }
+    }
+}
+
 
 void keypadRead (void* p) {
     // Init P1.30 as ADC0.4
@@ -109,6 +225,9 @@ int main(void)
 
     /* Consumes very little CPU, but need highest priority to handle mesh network ACKs */
     scheduler_add_task(new wirelessTask(PRIORITY_CRITICAL));
+
+    xTaskCreate(initialize, "initialize", STACK_BYTES(2048), NULL, PRIORITY_HIGH, &xinitialize);
+    xTaskCreate(play_music, "play_music", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, &xplay_music);
 
     /* Change "#if 0" to "#if 1" to run period tasks; @see period_callbacks.cpp */
     #if 0
