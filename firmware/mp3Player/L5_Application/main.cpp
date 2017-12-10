@@ -37,17 +37,42 @@
 #include "LPC17xx.h"    // LPC_GPIOx, PINSELX
 #include "stdint.h"     // uintX_t
 #include "printf_lib.h" // u0_dbg_printf()
-#include "adc0.h"    // ADC0 interface
+#include "adc0.h"       // ADC0 api
+#include "keypad/keypad.h"
+
+#define DBG_KEYPAD 1
+
 TaskHandle_t xHandleKeypadRead = NULL;
+char last_key = '\0';
+
 void keypadRead (void* p) {
     // Init P1.30 as ADC0.4
     LPC_PINCON->PINSEL3 |= (3 << 28);   // sets PINSEL3[29:28] bits to 11
+    uint8_t cnt = 0;
+    uint16_t avg = 0;
+    uint16_t running_total = 0;
+    keypad kp;
 
     // Main task loop
     while (1) {
-        vTaskDelay(20);
-        uint16_t adcVal = adc0_get_reading(4);  // reads from adc0 channel 3 (i.e. P0.26)
-        u0_dbg_printf("%d\n", adcVal);
+        vTaskDelay(5);
+        switch (cnt) {
+            case 5: {  // every 10 measurements, print the avg and use that to determine which key is pressed
+                avg = running_total/cnt;
+                last_key = kp.key(avg);
+                #if DBG_KEYPAD
+                u0_dbg_printf("avg:%d %c\n", avg, (last_key == '\0') ? 'x' : last_key);
+                #endif
+                avg = 0;
+                cnt = 0;
+                running_total = 0;
+                break;
+            }
+            default: {
+                running_total += adc0_get_reading(4);  // reads from adc0 channel 3 (i.e. P0.26)
+                cnt++;
+            }
+        }
     }
 }
 /* END RJ's Code */
