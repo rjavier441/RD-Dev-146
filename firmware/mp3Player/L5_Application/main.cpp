@@ -52,7 +52,6 @@ FIL file;
 
 TaskHandle_t xinitialize = NULL;
 TaskHandle_t xplay_music = NULL;
-TaskHandle_t xbuttons = NULL;
 
 TaskHandle_t xHandleKeypadRead = NULL;
 char last_key = '\0';
@@ -166,6 +165,84 @@ void play_music(void *p)
     }
 }
 
+void menu_toc(void *p)
+{
+    char *pFilename = "1:table_of_contents.txt";
+    f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ); 
+    unsigned int bytesRead = 0;
+    char *filename;
+
+
+    int offset = 0;
+
+    for(int j = 0; j < 5; j++)
+    {
+        f_lseek(&file, offset);
+        printf("offset: %d\n", offset);
+        char songname[32] = {0};
+        char extract[32] = {0};
+        f_read(&file, &songname, 32, &bytesRead);
+        sscanf(songname, "%s", extract);
+
+        for(int i = 0; i < 32; i++)
+        {
+            printf("%c", songname[i]);
+        }
+        printf("\naaa\n");
+        for(int i = 0; i < 32; i++)
+        {
+            if(extract[i] == '\0')
+            {
+                printf("\n");
+                printf("line length: %d\n", i);
+                offset += (i+1);
+                break;
+            }
+            printf("%c", extract[i]);
+        }
+
+
+    }
+    // f_close(&file);
+
+    // f_open(&file, extract, FA_OPEN_EXISTING | FA_READ);
+    
+    //counts the number of characters per line for offset
+    // for(int j = 0; j < 5; j++)
+    // {
+    //     f_read(&file, &songname, 32, &bytesRead);
+    //     sscanf(songname, "%s", extract[][j]);
+
+    //     for(int k = 0; k < 32; k++)
+    //     {
+    //         if(extract[k][j] == '\0')
+    //         {
+    //             break;
+    //         }
+    //     }
+    // }
+
+
+    while(1)
+    {
+        // static uint32_t offset = 0;
+        // char buffer[32] = {0};
+        // static int send_this = 0;
+        // static int put_here = 0;
+        // unsigned int bytesRead = 0;
+
+        // f_read(&file, &buffer, 32, &bytesRead);
+        // if(bytesRead < 32)
+        // {
+        //     f_close(&file);
+        // }
+        // for(int i = 0; i < 32; i++)
+        // {
+        //     printf("%X", buffer[i]);
+        // }    
+    }
+}
+
 
 void keypadRead (void* p) {
     // Init P1.30 as ADC0.4
@@ -232,8 +309,10 @@ int main(void)
     /* Consumes very little CPU, but need highest priority to handle mesh network ACKs */
     scheduler_add_task(new wirelessTask(PRIORITY_CRITICAL));
 
-    xTaskCreate(initialize, "initialize", STACK_BYTES(2048), NULL, PRIORITY_HIGH, &xinitialize);
-    xTaskCreate(play_music, "play_music", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, &xplay_music);
+    // xTaskCreate(initialize, "initialize", STACK_BYTES(2048), NULL, PRIORITY_HIGH, &xinitialize);
+    // xTaskCreate(play_music, "play_music", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, &xplay_music);
+
+    xTaskCreate(menu_toc, "menu_toc", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
 
     /* Change "#if 0" to "#if 1" to run period tasks; @see period_callbacks.cpp */
     #if 0
