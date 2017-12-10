@@ -23,3 +23,8 @@ tools/gcc-arm-none-eabi-*
 .idea/
 firmware/**/test
 firmware/**/test/README.md
+
+# RJ's Custom Git Ignores
+sjone.sh
+firmware/**/sjone
+!firmware/mp3Player
