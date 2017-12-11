@@ -32,13 +32,14 @@
 
 
 
-/* BEGIN RJ's Code */
+/* BEGIN RJ's Includes */
 #include "FreeRTOS.h"   // FreeRTOS constructs
 #include "LPC17xx.h"    // LPC_GPIOx, PINSELX
 #include "stdint.h"     // uintX_t
 #include "printf_lib.h" // u0_dbg_printf()
 #include "adc0.h"       // ADC0 api
 #include "keypad/keypad.h"
+/* END RJ's Includes */
 
 //Delwin's includes
 #include "ssp0.h"       //sends codec song data
@@ -46,7 +47,11 @@
 #include "ff.h"         //file access fatfs
 #include <stdio.h>      //printf
 
-#define DBG_KEYPAD 1
+/* BEGIN RJ's Defines */
+#define DBG_KEYPAD 0        // enables keypadRead() debug messages
+#define DBG_CU 1            // enables controlUnit() debug messages
+#define CU_MIN_RPT_COUNT 4  // the minimum value of repeatCnt for the CU to accept last_key as a valid input character
+/* END RJ's Defines */
 
 FIL file;
 
@@ -54,8 +59,20 @@ TaskHandle_t xinitialize = NULL;
 TaskHandle_t xplay_music = NULL;
 TaskHandle_t xbuttons = NULL;
 
+/* BEGIN RJ's Globals */
 TaskHandle_t xHandleKeypadRead = NULL;
+TaskHandle_t xHandleControlUnit = NULL;
 char last_key = '\0';
+uint8_t repeatCnt = 0;
+
+typedef enum {
+    PLAYING,    // playing a song
+    PAUSED,     // a song is paused (somewhere in the middle)
+    IDLE        // doing nothing (i.e. a song was stopped and must be restarted from 0:00, or a song has yet to be loaded)
+} mp3_state;
+mp3_state currentState = PLAYING;
+mp3_state prevState = IDLE;
+/* END RJ's Globals */
 
 void initialize(void *p)
 {
@@ -138,6 +155,9 @@ void play_music(void *p)
 {
     while(1)
     {
+        if (currentState == PAUSED) {
+            vTaskSuspend(NULL); // have this task suspend itself (in an effort to prevent a case where the CU pauses this task while p1.19 is still LOW)
+        }
         if(LPC_GPIO1->FIOPIN & (1 << 23))
         {
             static uint32_t offset = 0;
@@ -166,7 +186,21 @@ void play_music(void *p)
     }
 }
 
+/* BEGIN RJ's Code */
+// @function    changeState
+// @parameter   new_state - the state to change to
+// @returns     n/a
+// @details     This function updates the current state with the value of new_state, while also updating prevState with the last known state from currentState
+void changeState (mp3_state new_state) {
+    prevState = currentState;
+    currentState = new_state;
+    return;
+}
 
+// @function    keypadRead
+// @parameter   n/a
+// @returns     n/a
+// @details     This function comprises the keypad reader task, whose purpose is to determine the pressed key using the ADC value taken from the keypad circuit
 void keypadRead (void* p) {
     // Init P1.30 as ADC0.4
     LPC_PINCON->PINSEL3 |= (3 << 28);   // sets PINSEL3[29:28] bits to 11
@@ -181,9 +215,22 @@ void keypadRead (void* p) {
         switch (cnt) {
             case 5: {  // every 10 measurements, print the avg and use that to determine which key is pressed
                 avg = running_total/cnt;
-                last_key = kp.key(avg);
+                char temp = kp.key(avg);
+
+                // Key Noise Resolution: If current read matches the previous key, increment the key counter (a larger key count means this character is most likely the intended button being pressed). A sufficiently high repeatCnt will invoke the Control Unit to process the current key
+                switch (temp != '\0' && temp == last_key) {
+                    case 1: {
+                        repeatCnt++;
+                        break;
+                    }
+                    default: {  // either too much button noise, or we are getting the '\0' character
+                        repeatCnt = 0;
+                        break;
+                    }
+                }
+                last_key = temp;
                 #if DBG_KEYPAD
-                u0_dbg_printf("avg:%d %c\n", avg, (last_key == '\0') ? 'x' : last_key);
+                u0_dbg_printf("key:%d %c\n", avg, (last_key == '\0') ? 'x' : last_key);
                 #endif
                 avg = 0;
                 cnt = 0;
@@ -194,6 +241,53 @@ void keypadRead (void* p) {
                 running_total += adc0_get_reading(4);  // reads from adc0 channel 3 (i.e. P0.26)
                 cnt++;
             }
+        }
+    }
+}
+
+// @function    controlUnit
+// @parameter   n/a
+// @returns     n/a
+// @details     This function manages state changes to control the operation of the mp3 player
+void controlUnit (void* p) {
+    // Init CU here...
+
+    // Main control loop
+    while (1) {
+        vTaskDelay(50);
+
+        // Only do something if key value wasn't noisy
+        #if DBG_CU
+        u0_dbg_printf("State:%d\n", (int) currentState);
+        #endif
+        if (repeatCnt >= CU_MIN_RPT_COUNT) {
+            // Determine action based on accepted key value
+            switch (last_key) {
+                case '1': {
+                    // Do something
+                    #if DBG_CU
+                    u0_dbg_printf("CU: Play");
+                    #endif
+                    changeState(PLAYING);
+                    vTaskResume(xplay_music);
+                    break;
+                }
+                case '2': {
+                    // Do something
+                    #if DBG_CU
+                    u0_dbg_printf("CU: Pause");
+                    #endif
+                    changeState(PAUSED);
+                    break;
+                }
+                default: {
+                    // If last_key == '\0' or is unknown, do nothing
+                    break;
+                }
+            }
+
+            // Reset key repeatCnt
+            repeatCnt = 0;
         }
     }
 }
@@ -304,7 +398,8 @@ int main(void)
 
 
     /* BEGIN RJ's Code */
-    xTaskCreate(keypadRead, "keypad", STACK_BYTES(1024), 0, PRIORITY_HIGH, &xHandleKeypadRead);
+    xTaskCreate(keypadRead, "keypad", STACK_BYTES(1024), 0, PRIORITY_MEDIUM, &xHandleKeypadRead);
+    xTaskCreate(controlUnit, "mp3_cu", STACK_BYTES(1024), 0, PRIORITY_HIGH, &xHandleControlUnit);
     /* END RJ's Code */
 
     scheduler_start(); ///< This shouldn't return
