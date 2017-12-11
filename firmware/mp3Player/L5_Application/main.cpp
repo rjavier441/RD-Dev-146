@@ -88,12 +88,23 @@ mp3_state currentState = PLAYING;
 mp3_state prevState = IDLE;
 /* END RJ's Globals */
 
+/* BEGIN RJ's Mutexes */
+SemaphoreHandle_t xKeypadValueMutex = NULL; // for protecting last_key and repeatCnt
+SemaphoreHandle_t xStateMutex = NULL;       // for protecting currentState and prevState
+SemaphoreHandle_t xVolumeMutex = NULL;      // for protecting currentVolume
+/* END RJ's Mutexes */
+
 /* BEGIN RJ's Function Declarations */
 bool volumeSet (uint8_t val);
 /* END RJ's Function Declarations */
 
 void initialize(void *p)
 {
+    // Create mutexes for specific parameters
+    xKeypadValueMutex = xSemaphoreCreateMutex();
+    xStateMutex = xSemaphoreCreateMutex();
+    xVolumeMutex = xSemaphoreCreateMutex();
+
     //XDCS
     LPC_GPIO1->FIODIR |= (1 << 19);
 
@@ -178,33 +189,40 @@ void play_music(void *p)
 {
     while(1)
     {
-        if (currentState != PLAYING) {
-            vTaskSuspend(NULL); // have this task suspend itself (in an effort to prevent a case where the CU pauses this task while p1.19 is still LOW)
-        }
-        if(LPC_GPIO1->FIOPIN & (1 << 23))
-        {
-            static uint32_t offset = 0;
-            char buffer[32] = {0};
-            static int send_this = 0;
-            static int put_here = 0;
-            unsigned int bytesRead = 0;
-    
-            f_read(&file, &buffer, 32, &bytesRead);
-            if(bytesRead < 32)
-            {
-                f_close(&file);
-            }
-            
-            offset = offset + 32;
+        if (xStateMutex != NULL) {
+            if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
+                if (currentState != PLAYING) {
+                    xSemaphoreGive(xStateMutex);
+                    vTaskSuspend(NULL); // have this task suspend itself (in an effort to prevent a case where the CU pauses this task while p1.19 is still LOW)
+                }
 
-            LPC_GPIO1->FIOCLR = (1 << 19);
-    
-            for(int i = 0; i < 32; i++)
-            {
-            ssp0_exchange_byte(buffer[i]);
+                if(LPC_GPIO1->FIOPIN & (1 << 23))
+                {
+                    static uint32_t offset = 0;
+                    char buffer[32] = {0};
+                    static int send_this = 0;
+                    static int put_here = 0;
+                    unsigned int bytesRead = 0;
+            
+                    f_read(&file, &buffer, 32, &bytesRead);
+                    if(bytesRead < 32)
+                    {
+                        f_close(&file);
+                    }
+                    
+                    offset = offset + 32;
+
+                    LPC_GPIO1->FIOCLR = (1 << 19);
+            
+                    for(int i = 0; i < 32; i++)
+                    {
+                    ssp0_exchange_byte(buffer[i]);
+                    }
+            
+                    LPC_GPIO1->FIOSET = (1 << 19);
+                }
+                xSemaphoreGive(xStateMutex);
             }
-    
-            LPC_GPIO1->FIOSET = (1 << 19);
         }
     }
 }
@@ -215,8 +233,14 @@ void play_music(void *p)
 // @returns     n/a
 // @details     This function updates the current state with the value of new_state, while also updating prevState with the last known state from currentState
 void changeState (mp3_state new_state) {
-    prevState = currentState;
-    currentState = new_state;
+    // Use mutex to acquire access to guarded resources
+    if (xStateMutex != NULL) {
+        if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
+            prevState = currentState;
+            currentState = new_state;
+            xSemaphoreGive(xStateMutex);
+        }
+    }
     return;
 }
 
@@ -240,24 +264,30 @@ void keypadRead (void* p) {
                 avg = running_total/cnt;
                 char temp = kp.key(avg);
 
-                // Key Noise Resolution: If current read matches the previous key, increment the key counter (a larger key count means this character is most likely the intended button being pressed). A sufficiently high repeatCnt will invoke the Control Unit to process the current key
-                switch (temp != '\0' && temp == last_key) {
-                    case 1: {
-                        repeatCnt++;
-                        break;
-                    }
-                    default: {  // either too much button noise, or we are getting the '\0' character
-                        repeatCnt = 0;
-                        break;
+                // Use mutex to acquire access to guarded resources (i.e. last_key and repeatCnt)
+                if (xKeypadValueMutex != NULL) {
+                    if (xSemaphoreTake(xKeypadValueMutex, portMAX_DELAY) == pdTRUE) {
+                        // Key Noise Resolution: If current read matches the previous key, increment the key counter (a larger key count means this character is most likely the intended button being pressed). A sufficiently high repeatCnt will invoke the Control Unit to process the current key
+                        switch (temp != '\0' && temp == last_key) {
+                            case 1: {
+                                repeatCnt++;
+                                break;
+                            }
+                            default: {  // either too much button noise, or we are getting the '\0' character
+                                repeatCnt = 0;
+                                break;
+                            }
+                        }
+                        last_key = temp;
+                        #if DBG_KEYPAD
+                        u0_dbg_printf("key:%d %c\n", avg, (last_key == '\0') ? 'x' : last_key);
+                        #endif
+                        avg = 0;
+                        cnt = 0;
+                        running_total = 0;
+                        xSemaphoreGive(xKeypadValueMutex);
                     }
                 }
-                last_key = temp;
-                #if DBG_KEYPAD
-                u0_dbg_printf("key:%d %c\n", avg, (last_key == '\0') ? 'x' : last_key);
-                #endif
-                avg = 0;
-                cnt = 0;
-                running_total = 0;
                 break;
             }
             default: {
@@ -274,30 +304,37 @@ void keypadRead (void* p) {
 // @details     This function comprises the task that increases or decreases the volume (depending on the value dir) by steps the size of VOL_STEP_SIZE
 bool volumeControl (uint8_t dir) {
     bool success = false;
-    // Only assert control commands to SCI if DREQ is high
-    if (LPC_GPIO1->FIOPIN & (1 << 23)) {
-        LPC_GPIO1->FIOCLR = (1 << 20);  // drive XCS LOW
 
-        ssp0_exchange_byte(VS_WRITE);
-        ssp0_exchange_byte(0x0B);   // VOL register
-        switch (dir) {
-            // Increase volume
-            case 1: {
-                currentVolume = (currentVolume - VOL_STEP_SIZE < 0) ? 0 : (currentVolume - VOL_STEP_SIZE);
-                break;
-            }
+    // Take volume mutex
+    if (xVolumeMutex != NULL) {
+        if (xSemaphoreTake(xVolumeMutex, portMAX_DELAY) == pdTRUE) {
+            // Only assert control commands to SCI if DREQ is high
+            if (LPC_GPIO1->FIOPIN & (1 << 23)) {
+                LPC_GPIO1->FIOCLR = (1 << 20);  // drive XCS LOW
 
-            // Decrease volume
-            default: {
-                currentVolume = (currentVolume + VOL_STEP_SIZE > 0xFE) ? 0xFE : (currentVolume + VOL_STEP_SIZE);
-                break;
+                ssp0_exchange_byte(VS_WRITE);
+                ssp0_exchange_byte(0x0B);   // VOL register
+                switch (dir) {
+                    // Increase volume
+                    case 1: {
+                        currentVolume = (currentVolume - VOL_STEP_SIZE < 0) ? 0 : (currentVolume - VOL_STEP_SIZE);
+                        break;
+                    }
+
+                    // Decrease volume
+                    default: {
+                        currentVolume = (currentVolume + VOL_STEP_SIZE > 0xFE) ? 0xFE : (currentVolume + VOL_STEP_SIZE);
+                        break;
+                    }
+                }
+                ssp0_exchange_byte(currentVolume);  // control volume of first speaker (L or R? Which is modified first?)
+                ssp0_exchange_byte(currentVolume);  // control volume of other speaker
+                success = true;
+                
+                LPC_GPIO1->FIOSET = (1 << 20);  // pull XCS HIGH
             }
+            xSemaphoreGive(xVolumeMutex);
         }
-        ssp0_exchange_byte(currentVolume);  // control volume of first speaker (L or R? Which is modified first?)
-        ssp0_exchange_byte(currentVolume);  // control volume of other speaker
-        success = true;
-        
-        LPC_GPIO1->FIOSET = (1 << 20);  // pull XCS HIGH
     }
 
     return success;
@@ -311,18 +348,25 @@ bool volumeControl (uint8_t dir) {
 //              Also, this function updates currentVolume with the new value
 bool volumeSet (uint8_t val) {
     bool success = false;
-    // Only assert control commands to SCI if DREQ is high
-    if (LPC_GPIO1->FIOPIN & (1 << 23)) {
-        LPC_GPIO1->FIOCLR = (1 << 20);  // drive XCS LOW
 
-        ssp0_exchange_byte(VS_WRITE);
-        ssp0_exchange_byte(0x0B);   // VOL register
-        ssp0_exchange_byte(val);    // control volume of first speaker (L or R? Which is modified first?)
-        ssp0_exchange_byte(val);    // control volume of other speaker
-        currentVolume = val;        // update current volume level
-        success = true;
-        
-        LPC_GPIO1->FIOSET = (1 << 20);  // pull XCS HIGH
+    // Take volume mutex
+    if (xVolumeMutex != NULL) {
+        if (xSemaphoreTake(xVolumeMutex, portMAX_DELAY) == pdTRUE) {
+            // Only assert control commands to SCI if DREQ is high
+            if (LPC_GPIO1->FIOPIN & (1 << 23)) {
+                LPC_GPIO1->FIOCLR = (1 << 20);  // drive XCS LOW
+
+                ssp0_exchange_byte(VS_WRITE);
+                ssp0_exchange_byte(0x0B);   // VOL register
+                ssp0_exchange_byte(val);    // control volume of first speaker (L or R? Which is modified first?)
+                ssp0_exchange_byte(val);    // control volume of other speaker
+                currentVolume = val;        // update current volume level
+                success = true;
+                
+                LPC_GPIO1->FIOSET = (1 << 20);  // pull XCS HIGH
+            }
+            xSemaphoreGive(xVolumeMutex);
+        }
     }
 
     return success;
@@ -339,72 +383,74 @@ void controlUnit (void* p) {
     while (1) {
         vTaskDelay(50);
 
-        // Only do something if key value wasn't noisy
-        #if DBG_CU
-        // u0_dbg_printf("State:%d\n", (int) currentState);
-        #endif
-        if (repeatCnt >= CU_MIN_RPT_COUNT) {
-            // Determine action based on accepted key value
-            switch (last_key) {
-                case '1': {
-                    // Do something
-                    #if DBG_CU
-                    u0_dbg_printf("CU: Playing\n");
-                    #endif
-                    changeState(PLAYING);
-                    vTaskResume(xplay_music);
-                    break;
-                }
-                case '2': {
-                    // Do something
-                    #if DBG_CU
-                    u0_dbg_printf("CU: Pausing\n");
-                    #endif
-                    changeState(PAUSED);
-                    break;
-                }
-                case '3': { // Decrease Volume
-                    #if DBG_CU
-                    u0_dbg_printf("CU: V-\n");
-                    #endif
-                    changeState(HALTED);
-                    while (!volumeControl(VOL_LESS)) {
-                        // Redo volume control
-                        #if DBG_CU
-                        u0_dbg_printf("...\n");
-                        #endif
+        if (xKeypadValueMutex != NULL) {
+            if (xSemaphoreTake(xKeypadValueMutex, portMAX_DELAY) == pdTRUE) {
+                // Only do something if key value wasn't noisy
+                if (repeatCnt >= CU_MIN_RPT_COUNT) {
+                    // Determine action based on accepted key value
+                    switch (last_key) {
+                        case '1': {
+                            // Do something
+                            #if DBG_CU
+                            u0_dbg_printf("CU: Playing\n");
+                            #endif
+                            changeState(PLAYING);
+                            vTaskResume(xplay_music);
+                            break;
+                        }
+                        case '2': {
+                            // Do something
+                            #if DBG_CU
+                            u0_dbg_printf("CU: Pausing\n");
+                            #endif
+                            changeState(PAUSED);
+                            break;
+                        }
+                        case '3': { // Decrease Volume
+                            #if DBG_CU
+                            u0_dbg_printf("CU: V-\n");
+                            #endif
+                            changeState(HALTED);
+                            while (!volumeControl(VOL_LESS)) {
+                                // Redo volume control
+                                #if DBG_CU
+                                u0_dbg_printf("...\n");
+                                #endif
+                            }
+                            #if DBG_CU
+                            u0_dbg_printf("vol:-%5fdB\n", ((float) currentVolume) * 0.5);
+                            #endif
+                            changeState(PLAYING);
+                            break;
+                        }
+                        case 'A': { // Increase Volume
+                            #if DBG_CU
+                            u0_dbg_printf("CU: V+\n");
+                            #endif
+                            changeState(HALTED);
+                            while (!volumeControl(VOL_MORE)) {
+                                // Redo volume control
+                                #if DBG_CU
+                                u0_dbg_printf("...\n");
+                                #endif
+                            }
+                            #if DBG_CU
+                            u0_dbg_printf("vol:-%5fdB\n", ((float) currentVolume) * 0.5);
+                            #endif
+                            changeState(PLAYING);
+                            break;
+                        }
+                        default: {
+                            // If last_key == '\0' or is unknown, do nothing
+                            break;
+                        }
                     }
-                    #if DBG_CU
-                    u0_dbg_printf("vol:-%5fdB\n", ((float) currentVolume) * 0.5);
-                    #endif
-                    changeState(PLAYING);
-                    break;
-                }
-                case 'A': { // Increase Volume
-                    #if DBG_CU
-                    u0_dbg_printf("CU: V+\n");
-                    #endif
-                    changeState(HALTED);
-                    while (!volumeControl(VOL_MORE)) {
-                        // Redo volume control
-                        #if DBG_CU
-                        u0_dbg_printf("...\n");
-                        #endif
-                    }
-                    #if DBG_CU
-                    u0_dbg_printf("vol:-%5fdB\n", ((float) currentVolume) * 0.5);
-                    #endif
-                    changeState(PLAYING);
-                    break;
-                }
-                default: {
-                    // If last_key == '\0' or is unknown, do nothing
-                    break;
-                }
-            }
 
-            // Reset key repeatCnt
-            repeatCnt = 0;
+                    // Reset key repeatCnt
+                    repeatCnt = 0;
+                }
+                xSemaphoreGive(xKeypadValueMutex);
+            }
         }
     }
 }
@@ -443,7 +489,7 @@ int main(void)
     /* Consumes very little CPU, but need highest priority to handle mesh network ACKs */
     scheduler_add_task(new wirelessTask(PRIORITY_CRITICAL));
 
-    xTaskCreate(initialize, "initialize", STACK_BYTES(2048), NULL, PRIORITY_HIGH, &xinitialize);
+    xTaskCreate(initialize, "initialize", STACK_BYTES(2048), NULL, PRIORITY_CRITICAL, &xinitialize);
     xTaskCreate(play_music, "play_music", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, &xplay_music);
 
     /* Change "#if 0" to "#if 1" to run period tasks; @see period_callbacks.cpp */
