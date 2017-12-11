@@ -48,9 +48,21 @@
 #include <stdio.h>      //printf
 
 /* BEGIN RJ's Defines */
+// VS1053 Audio Codec-Specific Defines
+#define VS_READ 0x03
+#define VS_WRITE 0X02
+
+// Volume Control Defines
+#define VOL_STEP_SIZE 10   // the amount of volume points to increase/decrease by (every 1 step = 0.5db)
+#define VOL_LESS 0
+#define VOL_MORE 1
+
+// Control Unit Defines
+#define CU_MIN_RPT_COUNT 4  // the minimum value of repeatCnt for the CU to accept last_key as a valid input character
+
+// Misc Debug Controls
 #define DBG_KEYPAD 0        // enables keypadRead() debug messages
 #define DBG_CU 1            // enables controlUnit() debug messages
-#define CU_MIN_RPT_COUNT 4  // the minimum value of repeatCnt for the CU to accept last_key as a valid input character
 /* END RJ's Defines */
 
 FIL file;
@@ -64,15 +76,21 @@ TaskHandle_t xHandleKeypadRead = NULL;
 TaskHandle_t xHandleControlUnit = NULL;
 char last_key = '\0';
 uint8_t repeatCnt = 0;
+uint8_t currentVolume = 0x2F;    // the volume val for both channels; half-volume = 0x7F = 127; max = 0x00 = 0; min = 0xFE = 254
 
 typedef enum {
     PLAYING,    // playing a song
     PAUSED,     // a song is paused (somewhere in the middle)
+    HALTED,     // the VS is busy, or we need to do some temporary manipulation to it for a short while
     IDLE        // doing nothing (i.e. a song was stopped and must be restarted from 0:00, or a song has yet to be loaded)
 } mp3_state;
 mp3_state currentState = PLAYING;
 mp3_state prevState = IDLE;
 /* END RJ's Globals */
+
+/* BEGIN RJ's Function Declarations */
+bool volumeSet (uint8_t val);
+/* END RJ's Function Declarations */
 
 void initialize(void *p)
 {
@@ -139,6 +157,11 @@ void initialize(void *p)
             LPC_GPIO1->FIOSET = (1 << 20);
         }
 
+        // RJ: Set an initial volume
+        while (!volumeSet(currentVolume)) {
+            // try again
+        }
+
         stop_run = true;
 
         //SD read
@@ -155,7 +178,7 @@ void play_music(void *p)
 {
     while(1)
     {
-        if (currentState == PAUSED) {
+        if (currentState != PLAYING) {
             vTaskSuspend(NULL); // have this task suspend itself (in an effort to prevent a case where the CU pauses this task while p1.19 is still LOW)
         }
         if(LPC_GPIO1->FIOPIN & (1 << 23))
@@ -245,6 +268,66 @@ void keypadRead (void* p) {
     }
 }
 
+// @function    volumeControl
+// @parameter   dir - a uin8_t acting as a bool to control whether to increase (i.e. 1), or decrease (i.e. 0) volume by a preset amount
+// @returns     False, if the operation couldn't be completed. True, otherwise
+// @details     This function comprises the task that increases or decreases the volume (depending on the value dir) by steps the size of VOL_STEP_SIZE
+bool volumeControl (uint8_t dir) {
+    bool success = false;
+    // Only assert control commands to SCI if DREQ is high
+    if (LPC_GPIO1->FIOPIN & (1 << 23)) {
+        LPC_GPIO1->FIOCLR = (1 << 20);  // drive XCS LOW
+
+        ssp0_exchange_byte(VS_WRITE);
+        ssp0_exchange_byte(0x0B);   // VOL register
+        switch (dir) {
+            // Increase volume
+            case 1: {
+                currentVolume = (currentVolume - VOL_STEP_SIZE < 0) ? 0 : (currentVolume - VOL_STEP_SIZE);
+                break;
+            }
+
+            // Decrease volume
+            default: {
+                currentVolume = (currentVolume + VOL_STEP_SIZE > 0xFE) ? 0xFE : (currentVolume + VOL_STEP_SIZE);
+                break;
+            }
+        }
+        ssp0_exchange_byte(currentVolume);  // control volume of first speaker (L or R? Which is modified first?)
+        ssp0_exchange_byte(currentVolume);  // control volume of other speaker
+        success = true;
+        
+        LPC_GPIO1->FIOSET = (1 << 20);  // pull XCS HIGH
+    }
+
+    return success;
+}
+
+// @function    volumeSet
+// @parameter   val - the uint8_t value to set the volume register to
+// @returns     False, if the operation couldn't be completed. True, otherwise
+// @details     This function allows the volume to be set manually to a specific value in contrast to volumeControl(), which only allows relative volume changes (i.e. either louder or quieter)
+// @note        EXERCISE CAUTION, since this function DOES NOT CHECK if val is within bounds (i.e. 0 <= val <= 254)
+//              Also, this function updates currentVolume with the new value
+bool volumeSet (uint8_t val) {
+    bool success = false;
+    // Only assert control commands to SCI if DREQ is high
+    if (LPC_GPIO1->FIOPIN & (1 << 23)) {
+        LPC_GPIO1->FIOCLR = (1 << 20);  // drive XCS LOW
+
+        ssp0_exchange_byte(VS_WRITE);
+        ssp0_exchange_byte(0x0B);   // VOL register
+        ssp0_exchange_byte(val);    // control volume of first speaker (L or R? Which is modified first?)
+        ssp0_exchange_byte(val);    // control volume of other speaker
+        currentVolume = val;        // update current volume level
+        success = true;
+        
+        LPC_GPIO1->FIOSET = (1 << 20);  // pull XCS HIGH
+    }
+
+    return success;
+}
+
 // @function    controlUnit
 // @parameter   n/a
 // @returns     n/a
@@ -258,7 +341,7 @@ void controlUnit (void* p) {
 
         // Only do something if key value wasn't noisy
         #if DBG_CU
-        u0_dbg_printf("State:%d\n", (int) currentState);
+        // u0_dbg_printf("State:%d\n", (int) currentState);
         #endif
         if (repeatCnt >= CU_MIN_RPT_COUNT) {
             // Determine action based on accepted key value
@@ -266,7 +349,7 @@ void controlUnit (void* p) {
                 case '1': {
                     // Do something
                     #if DBG_CU
-                    u0_dbg_printf("CU: Play");
+                    u0_dbg_printf("CU: Playing\n");
                     #endif
                     changeState(PLAYING);
                     vTaskResume(xplay_music);
@@ -275,9 +358,43 @@ void controlUnit (void* p) {
                 case '2': {
                     // Do something
                     #if DBG_CU
-                    u0_dbg_printf("CU: Pause");
+                    u0_dbg_printf("CU: Pausing\n");
                     #endif
                     changeState(PAUSED);
+                    break;
+                }
+                case '3': { // Decrease Volume
+                    #if DBG_CU
+                    u0_dbg_printf("CU: V-\n");
+                    #endif
+                    changeState(HALTED);
+                    while (!volumeControl(VOL_LESS)) {
+                        // Redo volume control
+                        #if DBG_CU
+                        u0_dbg_printf("...\n");
+                        #endif
+                    }
+                    #if DBG_CU
+                    u0_dbg_printf("vol:-%5fdB\n", ((float) currentVolume) * 0.5);
+                    #endif
+                    changeState(PLAYING);
+                    break;
+                }
+                case 'A': { // Increase Volume
+                    #if DBG_CU
+                    u0_dbg_printf("CU: V+\n");
+                    #endif
+                    changeState(HALTED);
+                    while (!volumeControl(VOL_MORE)) {
+                        // Redo volume control
+                        #if DBG_CU
+                        u0_dbg_printf("...\n");
+                        #endif
+                    }
+                    #if DBG_CU
+                    u0_dbg_printf("vol:-%5fdB\n", ((float) currentVolume) * 0.5);
+                    #endif
+                    changeState(PLAYING);
                     break;
                 }
                 default: {
