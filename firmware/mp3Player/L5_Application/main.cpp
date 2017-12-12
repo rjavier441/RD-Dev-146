@@ -39,6 +39,7 @@
 #include "printf_lib.h" // u0_dbg_printf()
 #include "adc0.h"       // ADC0 api
 #include "keypad/keypad.h"
+#include <string.h>     // strncpy()
 /* END RJ's Includes */
 
 //Delwin's includes
@@ -58,11 +59,15 @@
 #define VOL_MORE 1
 
 // Control Unit Defines
-#define CU_MIN_RPT_COUNT 4  // the minimum value of repeatCnt for the CU to accept last_key as a valid input character
+#define CU_MIN_RPT_COUNT 3  // the minimum value of repeatCnt for the CU to accept last_key as a valid input character
+#define MAX_FILE_NAME_SIZE 100  // limit size of song filenames
+#define FILE_STATUS_OPEN 0x01   // file is open
+#define FILE_STATUS_CLOSED 0x00 // file is closed/unopened/unitialized
 
 // Misc Debug Controls
 #define DBG_KEYPAD 0        // enables keypadRead() debug messages
 #define DBG_CU 1            // enables controlUnit() debug messages
+#define DBG_SONGCHANGE 1    // enables changeSong() debug messages
 /* END RJ's Defines */
 
 FIL file;
@@ -77,25 +82,31 @@ TaskHandle_t xHandleControlUnit = NULL;
 char last_key = '\0';
 uint8_t repeatCnt = 0;
 uint8_t currentVolume = 0x2F;    // the volume val for both channels; half-volume = 0x7F = 127; max = 0x00 = 0; min = 0xFE = 254
+uint8_t fileStatus = FILE_STATUS_CLOSED;  // 0x00 = closed/unloaded/uninitialized, 0x01 = streaming
 
 typedef enum {
     PLAYING,    // playing a song
     PAUSED,     // a song is paused (somewhere in the middle)
     HALTED,     // the VS is busy, or we need to do some temporary manipulation to it for a short while
-    IDLE        // doing nothing (i.e. a song was stopped and must be restarted from 0:00, or a song has yet to be loaded)
+    IDLE        // doing nothing (i.e. a song was either completed or stopped & must be restarted from 0:00, or a song has yet to be loaded)
 } mp3_state;
-mp3_state currentState = PLAYING;
+mp3_state currentState = IDLE;
 mp3_state prevState = IDLE;
 /* END RJ's Globals */
 
+char pFilename[MAX_FILE_NAME_SIZE] = "1:Despasito.mp3";
+
 /* BEGIN RJ's Mutexes */
-SemaphoreHandle_t xKeypadValueMutex = NULL; // for protecting last_key and repeatCnt
-SemaphoreHandle_t xStateMutex = NULL;       // for protecting currentState and prevState
-SemaphoreHandle_t xVolumeMutex = NULL;      // for protecting currentVolume
+SemaphoreHandle_t xKeypadValueMutex = NULL; // for protecting "last_key" and "repeatCnt"
+SemaphoreHandle_t xStateMutex = NULL;       // for protecting "currentState" and "prevState"
+SemaphoreHandle_t xVolumeMutex = NULL;      // for protecting "currentVolume"
+SemaphoreHandle_t xSpiMutex = NULL;         // for protecting SSP0 bus use
+SemaphoreHandle_t xFileMutex = NULL;        // for protecting "pFilename", "fileStatus", and "file"
 /* END RJ's Mutexes */
 
 /* BEGIN RJ's Function Declarations */
 bool volumeSet (uint8_t val);
+void changeState (mp3_state new_state);
 /* END RJ's Function Declarations */
 
 void initialize(void *p)
@@ -104,6 +115,8 @@ void initialize(void *p)
     xKeypadValueMutex = xSemaphoreCreateMutex();
     xStateMutex = xSemaphoreCreateMutex();
     xVolumeMutex = xSemaphoreCreateMutex();
+    xSpiMutex = xSemaphoreCreateMutex();
+    xFileMutex = xSemaphoreCreateMutex();
 
     //XDCS
     LPC_GPIO1->FIODIR |= (1 << 19);
@@ -125,7 +138,6 @@ void initialize(void *p)
 
     static bool stop_run = false;
 
-    char* pFilename = "1:Despasito.mp3";
     unsigned int bytesRead = 0;
 
     if(!stop_run)
@@ -179,6 +191,7 @@ void initialize(void *p)
         
 
         f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ);
+        fileStatus = FILE_STATUS_OPEN;
     }
 
     vTaskSuspend(NULL);
@@ -204,24 +217,43 @@ void play_music(void *p)
                     static int put_here = 0;
                     unsigned int bytesRead = 0;
             
-                    f_read(&file, &buffer, 32, &bytesRead);
-                    if(bytesRead < 32)
-                    {
-                        f_close(&file);
+                    if (xFileMutex != NULL) {
+                        if (xSemaphoreTake(xFileMutex, portMAX_DELAY) == pdTRUE) {
+                            f_read(&file, &buffer, 32, &bytesRead);
+                            if(bytesRead < 32)
+                            {
+                                f_close(&file);
+                                fileStatus = FILE_STATUS_CLOSED;
+                            }
+                            xSemaphoreGive(xFileMutex);
+                        }
                     }
                     
                     offset = offset + 32;
 
                     LPC_GPIO1->FIOCLR = (1 << 19);
-            
-                    for(int i = 0; i < 32; i++)
-                    {
-                    ssp0_exchange_byte(buffer[i]);
+
+                    if (xSpiMutex != NULL) {
+                        if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
+                            for(int i = 0; i < 32; i++)
+                            {
+                                ssp0_exchange_byte(buffer[i]);
+                            }
+                            xSemaphoreGive(xSpiMutex);
+                        }
                     }
-            
                     LPC_GPIO1->FIOSET = (1 << 19);
+
+                    xSemaphoreGive(xStateMutex);    // this is necessary to avoid deadlock (changeState REQUIRES xStateMutex)
+
+                    // After sending last group of bytes (i.e. end of song), mark that this song is over
+                    if (bytesRead < 32) {
+                        offset = 0;
+                        changeState(IDLE);
+                    }
+                } else {
+                    xSemaphoreGive(xStateMutex);
                 }
-                xSemaphoreGive(xStateMutex);
             }
         }
     }
@@ -260,7 +292,7 @@ void keypadRead (void* p) {
     while (1) {
         vTaskDelay(5);
         switch (cnt) {
-            case 5: {  // every 10 measurements, print the avg and use that to determine which key is pressed
+            case 5: {  // every 5 measurements, print the avg and use that to determine which key is pressed
                 avg = running_total/cnt;
                 char temp = kp.key(avg);
 
@@ -312,23 +344,28 @@ bool volumeControl (uint8_t dir) {
             if (LPC_GPIO1->FIOPIN & (1 << 23)) {
                 LPC_GPIO1->FIOCLR = (1 << 20);  // drive XCS LOW
 
-                ssp0_exchange_byte(VS_WRITE);
-                ssp0_exchange_byte(0x0B);   // VOL register
-                switch (dir) {
-                    // Increase volume
-                    case 1: {
-                        currentVolume = (currentVolume - VOL_STEP_SIZE < 0) ? 0 : (currentVolume - VOL_STEP_SIZE);
-                        break;
-                    }
+                if (xSpiMutex != NULL) {
+                    if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
+                        ssp0_exchange_byte(VS_WRITE);
+                        ssp0_exchange_byte(0x0B);   // VOL register
+                        switch (dir) {
+                            // Increase volume
+                            case 1: {
+                                currentVolume = (currentVolume - VOL_STEP_SIZE < 0) ? 0 : (currentVolume - VOL_STEP_SIZE);
+                                break;
+                            }
 
-                    // Decrease volume
-                    default: {
-                        currentVolume = (currentVolume + VOL_STEP_SIZE > 0xFE) ? 0xFE : (currentVolume + VOL_STEP_SIZE);
-                        break;
+                            // Decrease volume
+                            default: {
+                                currentVolume = (currentVolume + VOL_STEP_SIZE > 0xFE) ? 0xFE : (currentVolume + VOL_STEP_SIZE);
+                                break;
+                            }
+                        }
+                        ssp0_exchange_byte(currentVolume);  // control volume of first speaker (L or R? Which is modified first?)
+                        ssp0_exchange_byte(currentVolume);  // control volume of other speaker
+                        xSemaphoreGive(xSpiMutex);
                     }
                 }
-                ssp0_exchange_byte(currentVolume);  // control volume of first speaker (L or R? Which is modified first?)
-                ssp0_exchange_byte(currentVolume);  // control volume of other speaker
                 success = true;
                 
                 LPC_GPIO1->FIOSET = (1 << 20);  // pull XCS HIGH
@@ -356,10 +393,15 @@ bool volumeSet (uint8_t val) {
             if (LPC_GPIO1->FIOPIN & (1 << 23)) {
                 LPC_GPIO1->FIOCLR = (1 << 20);  // drive XCS LOW
 
-                ssp0_exchange_byte(VS_WRITE);
-                ssp0_exchange_byte(0x0B);   // VOL register
-                ssp0_exchange_byte(val);    // control volume of first speaker (L or R? Which is modified first?)
-                ssp0_exchange_byte(val);    // control volume of other speaker
+                if (xSpiMutex != NULL) {
+                    if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
+                        ssp0_exchange_byte(VS_WRITE);
+                        ssp0_exchange_byte(0x0B);   // VOL register
+                        ssp0_exchange_byte(val);    // control volume of first speaker (L or R? Which is modified first?)
+                        ssp0_exchange_byte(val);    // control volume of other speaker
+                        xSemaphoreGive(xSpiMutex);
+                    }
+                }
                 currentVolume = val;        // update current volume level
                 success = true;
                 
@@ -372,24 +414,124 @@ bool volumeSet (uint8_t val) {
     return success;
 }
 
+// @function    changeSong
+// @parameter   newSong - a c-string of the file name to search for (i.e. "1:mySong.mp3")
+// @returns     n/a
+// @details     This function allows the user to change the current song to the one listed in pFilename
+// @note        This function assumes you've appropriately updated "pFilename" before calling it
+void changeSong () {
+    if (xFileMutex != NULL) {
+        if (xSemaphoreTake(xFileMutex, portMAX_DELAY) == pdTRUE) {
+            // If file is still open, close it to avoid corruption
+            if (fileStatus != FILE_STATUS_CLOSED) {
+                #if DBG_SONGCHANGE
+                u0_dbg_printf("CHGSNG: closing\n");
+                #endif
+                f_close(&file);
+                fileStatus = FILE_STATUS_CLOSED;
+            }
+
+            #if DBG_SONGCHANGE
+            u0_dbg_printf("CHGSNG: opening new file\n");
+            #endif
+            f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ);
+            fileStatus = FILE_STATUS_OPEN;
+            xSemaphoreGive(xFileMutex);
+        }
+    }
+}
+
 // @function    controlUnit
 // @parameter   n/a
 // @returns     n/a
 // @details     This function manages state changes to control the operation of the mp3 player
 void controlUnit (void* p) {
-    // Init CU here...
+    // CU Settings Flags Bit Description:
+    // The 2 least significant bits determine the mode to run in,
+    //  00 - playthrough mode (the DEFAULT mode; play all songs alphabetically, then stop when you get to the end of the list)
+    //  01 - shuffle mode (play all songs at random, without end)
+    //  10 - repeat mode (repeat the current song over and over)
+    static uint8_t cuSettings = 0x00;
+    bool invokeSongChange = false;
 
     // Main control loop
     while (1) {
         vTaskDelay(50);
 
+        // (Contextual) Continuous Playback
+        if (xStateMutex != NULL) {
+            if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
+                switch (currentState) {
+                    case IDLE: {    // If the song has finished/stopped, or if nothing has happened yet
+                        if (prevState == IDLE) {    // here, the mp3 has just initialized
+                            // Do nothing; the user has to select a song and hit play, first
+                        } else if (prevState == PLAYING || prevState == PAUSED) {  // here, the mp3 has paused or has just finished a song
+                            // Determine what to do based off of "cuSettings[1:0]"
+                            switch (cuSettings & 0x03) {
+                                // Playthrough Mode (default)
+                                case 0x00: {
+                                    // Add some one-time, alphabetical-order song-playing logic here...
+                                    // ...
+                                    // ...
+
+                                    // Then change the song name like this...
+                                    strncpy(pFilename, "1:Shape_of_You.mp3", MAX_FILE_NAME_SIZE);
+                                    pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
+
+                                    // Request a song change to the new song
+                                    invokeSongChange = true;
+                                    break;
+                                }
+
+                                // Shuffle Mode
+                                case 0x01: {
+                                    // Add some random-selection, never-ending song-playing logic here...
+                                    // ...
+                                    // ...
+
+                                    // Then change the song name like this...
+                                    strncpy(pFilename, "1:Despasito.mp3", MAX_FILE_NAME_SIZE);
+                                    pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
+
+                                    // Request a song change to the new song
+                                    invokeSongChange = true;
+                                    break;
+                                }
+
+                                // Repeat Mode
+                                case 0x02: {
+                                    // Simply request a song change without changing the song name
+                                    invokeSongChange = true;
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                xSemaphoreGive(xStateMutex);
+
+                // After song change, only autoplay the song if the prev song wasn't paused or stopped
+                if (invokeSongChange == true) {
+                    invokeSongChange = false;
+                    changeSong();
+
+                    // Since music task suspends itself when currentState != PLAYING,
+                    // we must restore the PLAYING state and resume it ourselves
+                    changeState(PLAYING);
+                    vTaskResume(xplay_music);
+                }
+            }
+        }
+
+        // Keypad Input Response
         if (xKeypadValueMutex != NULL) {
             if (xSemaphoreTake(xKeypadValueMutex, portMAX_DELAY) == pdTRUE) {
                 // Only do something if key value wasn't noisy
                 if (repeatCnt >= CU_MIN_RPT_COUNT) {
                     // Determine action based on accepted key value
                     switch (last_key) {
-                        case '1': {
+                        case '1': { // Play
                             // Do something
                             #if DBG_CU
                             u0_dbg_printf("CU: Playing\n");
@@ -398,7 +540,7 @@ void controlUnit (void* p) {
                             vTaskResume(xplay_music);
                             break;
                         }
-                        case '2': {
+                        case '2': { // Pause
                             // Do something
                             #if DBG_CU
                             u0_dbg_printf("CU: Pausing\n");
@@ -439,6 +581,46 @@ void controlUnit (void* p) {
                             #endif
                             changeState(PLAYING);
                             break;
+                        }
+                        case 'B': { // Next Song
+                            #if DBG_CU
+                            u0_dbg_printf("CU: NXT\n");
+                            #endif
+                            changeState(IDLE);
+                            break;
+                        }
+                        case 'D': { // Switch mode
+                            // Change modes in a cyclic manner
+                            switch ((cuSettings & 0x03) % 3) {
+                                // From Playthrough Mode, switch to Shuffle Mode
+                                case 0x00: {
+                                    #if DBG_CU
+                                    u0_dbg_printf("CU: shuffle mode\n");
+                                    #endif
+                                    cuSettings &= 0xFC; // preserve bits 7-2
+                                    cuSettings |= 0x01; // set bit 0
+                                    break;
+                                }
+
+                                // From Shuffle Mode, switch to Repeat Mode
+                                case 0x01: {
+                                    #if DBG_CU
+                                    u0_dbg_printf("CU: repeat mode\n");
+                                    #endif
+                                    cuSettings &= 0xFC; // preserve bits 7-2
+                                    cuSettings |= 0x02; // set bit 1
+                                    break;
+                                }
+
+                                // From Repeat Mode, switch to Playthrough Mode
+                                case 0x02: {
+                                    #if DBG_CU
+                                    u0_dbg_printf("CU: playthrough mode\n");
+                                    #endif
+                                    cuSettings &= 0xFC; // preserve bits 7-2, clear bits 1-0
+                                    break;
+                                }
+                            }
                         }
                         default: {
                             // If last_key == '\0' or is unknown, do nothing
