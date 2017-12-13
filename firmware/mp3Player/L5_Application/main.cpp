@@ -48,6 +48,8 @@
 #include "ff.h"         //file access fatfs
 #include <stdio.h>      //printf
 
+#include "io.hpp"
+
 /* BEGIN RJ's Defines */
 // VS1053 Audio Codec-Specific Defines
 #define VS_READ 0x03
@@ -232,8 +234,6 @@ void play_music(void *p)
                 {
                     static uint32_t offset = 0;
                     char buffer[32] = {0};
-                    static int send_this = 0;
-                    static int put_here = 0;
                     unsigned int bytesRead = 0;
             
                     if (xFileMutex != NULL) {
@@ -284,7 +284,6 @@ void menu_toc(void *p)
     char *pFilename = "1:table_of_contents.txt";
     f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ); 
     unsigned int bytesRead = 0;
-    char *filename;
 
 
     int offset = 0;
@@ -764,6 +763,119 @@ void controlUnit (void* p) {
     }
 }
 /* END RJ's Code */
+int offset = 0;
+unsigned int bytesRead = 0;
+
+void display_lcd(char *row1, char *row2)
+{
+    printf("%s\n", row1);
+    printf("%s\n", row2);
+}
+
+//if button pressed
+void update_screen(char *row1, char *row2, int button)
+{
+    f_lseek(&file, offset);
+    printf("offset: %d\n", offset);
+    char songname[32] = {0};
+    char extract[32] = {0};
+    f_read(&file, &songname, 32, &bytesRead);
+    sscanf(songname, "%s", extract);
+
+    *row1 = {0};
+
+    //sets row1 to row2
+    for(int i = 0; i < 32; i++)
+    {
+        row1[i] = row2[i];
+    }
+
+    //sets row2 to the next line
+    for(int i = 0; i < 32; i++)
+    {
+        if(extract[i] == '\0')
+        {
+            row2[i] = extract[i];
+            offset += (i+1);
+            break;
+        }
+        row2[i] = extract[i];
+    }
+
+    if(bytesRead < 2)
+    {
+        offset = 0;
+    }
+
+}    
+
+void lcd_menu(void *p)
+{
+    char lcd_top_row[32] = {0};
+    char lcd_bottom_row[32] = {0};
+
+    char *pFilename = "1:table_of_contents.txt";
+    f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ); 
+
+    //fill in top row
+    f_lseek(&file, offset);
+    printf("offset: %d\n", offset);
+    char songname[32] = {0};
+    f_read(&file, &songname, 32, &bytesRead);
+    sscanf(songname, "%s", lcd_top_row);
+
+    //extracting the song name
+    for(int i = 0; i < 32; i++)
+    {
+        if(lcd_top_row[i] == '\0')
+        {
+            // printf("\n");
+            // printf("line length: %d\n", i);
+            offset += (i+1);
+            break;
+        }
+        // printf("%c", lcd_top_row[i]);
+    }
+
+    //fills in bottom row
+    f_lseek(&file, offset);
+    printf("offset: %d\n", offset);
+    *songname = {0};
+    f_read(&file, &songname, 32, &bytesRead);
+    sscanf(songname, "%s", lcd_bottom_row);
+
+    //extracting the song name
+    for(int i = 0; i < 32; i++)
+    {
+        if(lcd_bottom_row[i] == '\0')
+        {
+            // printf("\n");
+            // printf("line length: %d\n", i);
+            offset += (i+1);
+            break;
+        }
+        // printf("%c", lcd_bottom_row[i]);
+    }
+
+    display_lcd(lcd_top_row, lcd_bottom_row);
+
+    while(1)
+    {
+        if(SW.getSwitch(1))
+        {
+            f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ); 
+            vTaskDelay(1000);
+            update_screen(lcd_top_row, lcd_bottom_row, 1);
+            display_lcd(lcd_top_row, lcd_bottom_row);
+            f_close(&file);
+        }
+        else if(SW.getSwitch(2))
+        {
+
+        }
+    }
+}
+
 
 
 
@@ -802,7 +914,9 @@ int main(void)
     // xTaskCreate(play_music, "play_music", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, &xplay_music);
 
     // xTaskCreate(menu_toc, "menu_toc", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
-    xTaskCreate(dir_test, "dir_test", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
+    // xTaskCreate(dir_test, "dir_test", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
+
+    xTaskCreate(lcd_menu, "lcd_menu", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
 
     /* Change "#if 0" to "#if 1" to run period tasks; @see period_callbacks.cpp */
     #if 0
