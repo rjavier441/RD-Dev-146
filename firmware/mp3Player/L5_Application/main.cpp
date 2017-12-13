@@ -94,7 +94,7 @@ mp3_state currentState = IDLE;
 mp3_state prevState = IDLE;
 /* END RJ's Globals */
 
-char pFilename[MAX_FILE_NAME_SIZE] = "1:Despasito.mp3";
+char pFilename[MAX_FILE_NAME_SIZE] = "1:Wet Dreamz.mp3";
 
 /* BEGIN RJ's Mutexes */
 SemaphoreHandle_t xKeypadValueMutex = NULL; // for protecting "last_key" and "repeatCnt"
@@ -155,12 +155,36 @@ void initialize(void *p)
         {
             LPC_GPIO1->FIOCLR = (1 << 20);
 
-            // printf("Reading from MODE register");
+            // printf("Writing to CLOCKF register");
 
             ssp0_exchange_byte(0x02);
             ssp0_exchange_byte(0x03);
-            char b2 = ssp0_exchange_byte(0xf8);
-            char b3 = ssp0_exchange_byte(0x00);
+            // minimum music accesibility is with SC_MULT = XTALI x 2.0 (bits 15-13 are 3'b001)
+            // max flexibility acheived with SC_ADD = 3 (bits 12-11 are 2'b11)
+            
+            // running at XTALI = 12.288MHz (default) (bits 10-0 are 11'b00000000000) <-- too fast
+            // ssp0_exchange_byte(0x38);
+            // ssp0_exchange_byte(0x00);
+            
+            // running at XTALI = 10MHz (bits 10-0 are 11'b001 1111 0100) <-- too fast
+            // ssp0_exchange_byte(0x39);
+            // ssp0_exchange_byte(0xF4);
+
+            // running at XTALI = 5MHz (bits 10-0 are 11'b010 1110 1110) <-- a tad bit too fast
+            // ssp0_exchange_byte(0x3A);
+            // ssp0_exchange_byte(0xEE);
+
+            // running at XTALI = 2.5MHz (bits 10-0 are 11'b101 0101 1111) <-- a bit too slow
+            // ssp0_exchange_byte(0x3D);
+            // ssp0_exchange_byte(0x5F);
+
+            // running at XTALI = 3MHz (bits 10-0 are 11'b100 1110 0010) <-- a bit too slow
+            ssp0_exchange_byte(0x3C);
+            ssp0_exchange_byte(0xE2);
+
+            // running at XTALI = 4.11kHz (bits 10-0 are 11'b100 1110 0010) <-- a bit too slow
+            // ssp0_exchange_byte(0x3F);
+            // ssp0_exchange_byte(0xCE);
 
             // printf("%X%X\n", b2, b3);
             LPC_GPIO1->FIOSET = (1 << 20);
@@ -475,7 +499,7 @@ void controlUnit (void* p) {
                                     // ...
 
                                     // Then change the song name like this...
-                                    strncpy(pFilename, "1:Shape_of_You.mp3", MAX_FILE_NAME_SIZE);
+                                    strncpy(pFilename, "1:Cant_Feel_My_Face.mp3", MAX_FILE_NAME_SIZE);
                                     pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
 
                                     // Request a song change to the new song
@@ -490,7 +514,7 @@ void controlUnit (void* p) {
                                     // ...
 
                                     // Then change the song name like this...
-                                    strncpy(pFilename, "1:Despasito.mp3", MAX_FILE_NAME_SIZE);
+                                    strncpy(pFilename, "1:Wet Dreamz.mp3", MAX_FILE_NAME_SIZE);
                                     pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
 
                                     // Request a song change to the new song
@@ -514,7 +538,40 @@ void controlUnit (void* p) {
                 // After song change, only autoplay the song if the prev song wasn't paused or stopped
                 if (invokeSongChange == true) {
                     invokeSongChange = false;
-                    changeSong();
+                    changeSong();   // switch stream source
+
+                    // Set Codec's Cancel Bit
+                    if (xSpiMutex != NULL) {
+                        if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
+                            while (LPC_GPIO1->FIOPIN & (1 << 23) == 0) {
+                                // Wait for DREQ to go high before sending SCI commands
+                                #if DBG_CU
+                                u0_dbg_printf("CU: DREQ low\n");
+                                #endif
+                            }
+
+                            // Drive XCS LOW
+                            LPC_GPIO1->FIOCLR = (1 << 20);
+
+                            // Set cancel bit here
+                            ssp0_exchange_byte(VS_WRITE);
+                            ssp0_exchange_byte(0x00);   // mode register addr
+                            ssp0_exchange_byte(0x48);   // keep high byte same as before
+                            ssp0_exchange_byte(0x48);   // preserve previous settings, except bit 3, which we set
+
+                            // Pull XCS HIGH
+                            LPC_GPIO1->FIOSET = (1 << 20);
+
+                            xSemaphoreGive(xSpiMutex);
+
+                            while (LPC_GPIO1->FIOPIN & (1 << 23) == 0) {
+                                // Wait for DREQ to go high before resuming normal data streaming (see 7.4.2 [pg.21] of datasheet [SCI Write])
+                                #if DBG_CU
+                                u0_dbg_printf("CU: DREQ low\n");
+                                #endif
+                            }
+                        }
+                    }
 
                     // Since music task suspends itself when currentState != PLAYING,
                     // we must restore the PLAYING state and resume it ourselves
