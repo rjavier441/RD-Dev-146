@@ -228,7 +228,36 @@ void initialize(void *p)
 
         //SD read
         
+        //create songlist of song directory
 
+        //Directory stuff
+
+        //deletes the old directory song list
+        f_unlink("1:songlist.txt");
+
+        DIR dp;
+        FRESULT status = FR_INT_ERR;
+        FILINFO info;
+        char Lfname[_MAX_LFN];
+        char songname[_MAX_LFN];
+        //end of directory stuff
+        f_opendir(&dp, "1:/Songs");
+
+        while(1)
+        {
+            info.lfname = Lfname;
+            info.lfsize = sizeof(Lfname);
+
+            status = f_readdir(&dp, &info);
+            if(FR_OK != status || !info.fname[0]) 
+            {
+                f_closedir(&dp);
+                break;
+            }
+
+            int length = sprintf(songname, "1:%s\n", Lfname);
+            Storage::append("1:songlist.txt", &songname, length);
+        }
         f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ);
         fileStatus = FILE_STATUS_OPEN;
     }
@@ -962,10 +991,8 @@ void lcd_menu(void *p)
             break;
             //display the song list
             case PLAYSONG:
-            printf("playsong");
             if(xQueueReceive(button_pushed, &button_pressed, portMAX_DELAY))     //if button down is pressed
             {
-                printf("playsong2");
                 //lock this inside a blocking queue. wait for button press
                 if(button_pressed == 1)
                 {
@@ -976,7 +1003,6 @@ void lcd_menu(void *p)
 
                     info.lfname = lcd_bottom_row;
                     info.lfsize = sizeof(lcd_bottom_row);
-                    printf("btn1");
 
                     status = f_readdir(&dp, &info);
                     printf("%d", status);
@@ -996,10 +1022,9 @@ void lcd_menu(void *p)
                 }
                 else if(button_pressed == 3)
                 {
-                    printf("btn3");
                     //tells menu to play the song specified by lcd_top_row
                     sprintf(menu_state.filename, "1:%s\n", lcd_top_row);
-                    menu_state.file_offset = offset;
+                    // menu_state.file_offset = offset;
                     xQueueSend(menu_block, &menu_state, portMAX_DELAY);
                 }
             }
