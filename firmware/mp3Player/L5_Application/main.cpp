@@ -161,30 +161,26 @@ void initialize(void *p)
             ssp0_exchange_byte(0x03);
             // minimum music accesibility is with SC_MULT = XTALI x 2.0 (bits 15-13 are 3'b001)
             // max flexibility acheived with SC_ADD = 3 (bits 12-11 are 2'b11)
-            
-            // running at XTALI = 12.288MHz (default) (bits 10-0 are 11'b00000000000) <-- too fast
-            // ssp0_exchange_byte(0x38);
-            // ssp0_exchange_byte(0x00);
-            
-            // running at XTALI = 10MHz (bits 10-0 are 11'b001 1111 0100) <-- too fast
-            // ssp0_exchange_byte(0x39);
-            // ssp0_exchange_byte(0xF4);
 
-            // running at XTALI = 5MHz (bits 10-0 are 11'b010 1110 1110) <-- a tad bit too fast
-            // ssp0_exchange_byte(0x3A);
-            // ssp0_exchange_byte(0xEE);
+            // running at XTALI = 3MHz? 21.192MHz (bits 10-0 are 11'b100 1110 0010) <-- a bit too fast
+            // ssp0_exchange_byte(0x3C);
+            // ssp0_exchange_byte(0xE2);
 
-            // running at XTALI = 2.5MHz (bits 10-0 are 11'b101 0101 1111) <-- a bit too slow
+            // running at XTALI = ?MHz <-- a tiny bit too fast
             // ssp0_exchange_byte(0x3D);
-            // ssp0_exchange_byte(0x5F);
+            // ssp0_exchange_byte(0x1F);
 
-            // running at XTALI = 3MHz (bits 10-0 are 11'b100 1110 0010) <-- a bit too slow
-            ssp0_exchange_byte(0x3C);
-            ssp0_exchange_byte(0xE2);
+            // running at XTALI = ?MHz <-- the closest I've got to the original
+            ssp0_exchange_byte(0x3D);
+            ssp0_exchange_byte(0x25);
 
-            // running at XTALI = 4.11kHz (bits 10-0 are 11'b100 1110 0010) <-- a bit too slow
-            // ssp0_exchange_byte(0x3F);
-            // ssp0_exchange_byte(0xCE);
+            // running at XTALI = ?MHz <-- a tiny bit too slow
+            // ssp0_exchange_byte(0x3D);
+            // ssp0_exchange_byte(0x27);
+
+            // running at XTALI = ?MHz <-- a bit too slow
+            // ssp0_exchange_byte(0x3D);
+            // ssp0_exchange_byte(0x2F);
 
             // printf("%X%X\n", b2, b3);
             LPC_GPIO1->FIOSET = (1 << 20);
