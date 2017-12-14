@@ -94,7 +94,7 @@ mp3_state currentState = IDLE;
 mp3_state prevState = IDLE;
 /* END RJ's Globals */
 
-char pFilename[MAX_FILE_NAME_SIZE] = "1:Wet Dreamz.mp3";
+char pFilename[MAX_FILE_NAME_SIZE] = "1:Songs/Wet Dreamz.mp3";
 
 /* BEGIN RJ's Mutexes */
 SemaphoreHandle_t xKeypadValueMutex = NULL; // for protecting "last_key" and "repeatCnt"
@@ -435,7 +435,7 @@ bool volumeSet (uint8_t val) {
 }
 
 // @function    changeSong
-// @parameter   newSong - a c-string of the file name to search for (i.e. "1:mySong.mp3")
+// @parameter   newSong - a c-string of the file name to search for (i.e. "1:Songs/mySong.mp3")
 // @returns     n/a
 // @details     This function allows the user to change the current song to the one listed in pFilename
 // @note        This function assumes you've appropriately updated "pFilename" before calling it
@@ -495,7 +495,7 @@ void controlUnit (void* p) {
                                     // ...
 
                                     // Then change the song name like this...
-                                    strncpy(pFilename, "1:Cant_Feel_My_Face.mp3", MAX_FILE_NAME_SIZE);
+                                    strncpy(pFilename, "1:Songs/Cant_Feel_My_Face.mp3", MAX_FILE_NAME_SIZE);
                                     pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
 
                                     // Request a song change to the new song
@@ -510,7 +510,7 @@ void controlUnit (void* p) {
                                     // ...
 
                                     // Then change the song name like this...
-                                    strncpy(pFilename, "1:Wet Dreamz.mp3", MAX_FILE_NAME_SIZE);
+                                    strncpy(pFilename, "1:Songs/Wet Dreamz.mp3", MAX_FILE_NAME_SIZE);
                                     pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
 
                                     // Request a song change to the new song
