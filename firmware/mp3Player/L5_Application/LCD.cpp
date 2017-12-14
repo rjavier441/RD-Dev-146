@@ -8,7 +8,7 @@
 
 void initLCD(void) {
   Uart3::getInstance().init(9600);
-  vTaskDelay(100);
+  // vTaskDelay(100);
 }
 void initLCD(int rate) { Uart3::getInstance().init(rate); }
 void putChar(char c) { Uart3::getInstance().putChar(c); }

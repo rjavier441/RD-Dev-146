@@ -83,6 +83,7 @@ TaskHandle_t xplay_music = NULL;
 /* BEGIN RJ's Globals */
 TaskHandle_t xHandleKeypadRead = NULL;
 TaskHandle_t xHandleControlUnit = NULL;
+TaskHandle_t xHandleLcdMenu = NULL;
 char last_key = '\0';
 uint8_t repeatCnt = 0;
 uint8_t currentVolume = 0x2F;    // the volume val for both channels; half-volume = 0x7F = 127; max = 0x00 = 0; min = 0xFE = 254
@@ -121,8 +122,8 @@ SemaphoreHandle_t xFileMutex = NULL;        // for protecting "pFilename", "file
 /* END RJ's Mutexes */
 
 //Queues
-QueueHandle_t button_pushed = xQueueCreate(1, sizeof(uint8_t));     //'1' will be down '2' will be back '3' will be enter
-QueueHandle_t menu_block = xQueueCreate(1, sizeof(menu_packet_t));
+volatile QueueHandle_t button_pushed = xQueueCreate(1, sizeof(uint8_t));     //'1' will be down '2' will be back '3' will be enter
+volatile QueueHandle_t menu_block = xQueueCreate(1, sizeof(menu_packet_t));
 
 /* BEGIN RJ's Function Declarations */
 bool volumeSet (uint8_t val);
@@ -608,6 +609,11 @@ void controlUnit (void* p) {
         // (Contextual) Continuous Playback
         if (xStateMutex != NULL) {
             if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
+
+                #if DBG_CU
+                u0_dbg_printf("CS: %d PS: %d\n", currentState, prevState);
+                #endif
+
                 switch (currentState) {
                     case IDLE: {    // If the song has finished/stopped, or if nothing has happened yet
                         if (prevState == IDLE) {    // here, the mp3 has just initialized
@@ -747,19 +753,26 @@ void controlUnit (void* p) {
                         }
                         case '4': { //down button
                             button_lcd = 1;
-                            xQueueSend(button_pushed, &button_lcd, portMAX_DELAY);
+                            if (xQueueSend(button_pushed, &button_lcd, portMAX_DELAY) == pdTRUE) {
+                                u0_dbg_printf("Down button sent!\n");
+                            } else {
+                                u0_dbg_printf("nope\n");
+                            }
+                            vTaskResume(xHandleLcdMenu);
                             break;
                         }
 
                         case '5': { //back button
                             button_lcd = 2;
                             xQueueSend(button_pushed, &button_lcd, portMAX_DELAY);
+                            vTaskResume(xHandleLcdMenu);
                             break;
                         }
 
                         case '6': { //enter button
                             button_lcd = 3;
                             xQueueSend(button_pushed, &button_lcd, portMAX_DELAY);
+                            vTaskResume(xHandleLcdMenu);
                             xQueueReceive(menu_block, &lcd_state, portMAX_DELAY);
                             break;
                         }
@@ -846,8 +859,8 @@ void display_lcd(char *row1, char *row2)
     setCursor(2,1);
     // putChar(row2[1]);
     putString(row2);
-    // printf("%s\n", row1);
-    // printf("%s\n", row2);
+    // u0_dbg_printf("%s\n", row1);
+    // u0_dbg_printf("%s\n", row2);
 }
 
 //if button pressed
@@ -917,8 +930,8 @@ void lcd_menu(void *p)
     char lcd_top_row[32] = {0};
     char lcd_bottom_row[32] = {0};
 
-    char *pFilename = "1:table_of_contents.txt";
-    f_open(&file2, pFilename, FA_OPEN_EXISTING | FA_READ); 
+    char *anotherFileName = "1:table_of_contents.txt";
+    f_open(&file2, anotherFileName, FA_OPEN_EXISTING | FA_READ); 
     static int offset = 0;
     static unsigned int bytesRead = 0;
 
@@ -966,7 +979,7 @@ void lcd_menu(void *p)
 
     while(1)
     {
-
+        vTaskDelay(50);
         switch(menu_state.state)
         {
             //displaying the initial menu
@@ -975,7 +988,7 @@ void lcd_menu(void *p)
             {
                 if(button_pressed == 1)
                 {
-                    f_open(&file2, pFilename, FA_OPEN_EXISTING | FA_READ); 
+                    f_open(&file2, anotherFileName, FA_OPEN_EXISTING | FA_READ); 
                     offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
                     display_lcd(lcd_top_row, lcd_bottom_row);
                     f_close(&file2);
@@ -1125,6 +1138,9 @@ void lcd_menu(void *p)
             default:
                 break;
         }
+
+        // have this task suspend itself
+        vTaskSuspend(NULL);
     }
 }
 
@@ -1168,7 +1184,7 @@ int main(void)
     // xTaskCreate(menu_toc, "menu_toc", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
     // xTaskCreate(dir_test, "dir_test", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
 
-    xTaskCreate(lcd_menu, "lcd_menu", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
+    xTaskCreate(lcd_menu, "lcd_menu", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, &xHandleLcdMenu);
 
     /* Change "#if 0" to "#if 1" to run period tasks; @see period_callbacks.cpp */
     #if 0
@@ -1240,7 +1256,7 @@ int main(void)
 
     /* BEGIN RJ's Code */
     xTaskCreate(keypadRead, "keypad", STACK_BYTES(1024), 0, PRIORITY_MEDIUM, &xHandleKeypadRead);
-    xTaskCreate(controlUnit, "mp3_cu", STACK_BYTES(1024), 0, PRIORITY_HIGH, &xHandleControlUnit);
+    xTaskCreate(controlUnit, "mp3_cu", STACK_BYTES(2048), 0, PRIORITY_HIGH, &xHandleControlUnit);
     /* END RJ's Code */
 
     scheduler_start(); ///< This shouldn't return
