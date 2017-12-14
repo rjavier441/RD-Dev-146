@@ -1,6 +1,6 @@
 #include "tasks.hpp"
 #include "uart3.hpp"
-#include "utilities.h" // delay_ms()
+#include "utilities.h" // vTaskDelay()
 #include <LCD.hpp>
 #include <cstring>
 #include <stdio.h> // printf() / scanf()
@@ -8,7 +8,7 @@
 
 void initLCD(void) {
   Uart3::getInstance().init(9600);
-  delay_ms(100);
+  vTaskDelay(100);
 }
 void initLCD(int rate) { Uart3::getInstance().init(rate); }
 void putChar(char c) { Uart3::getInstance().putChar(c); }
@@ -66,7 +66,8 @@ void backspaceLCD(void) {
 void clearLCD(void) {
   Uart3::getInstance().putChar(0xFE);
   Uart3::getInstance().putChar(0x51);
-  delay_ms(2);
+  setCursor(1, 1);
+  vTaskDelay(2);
 }
 void contrast(int c) {
   if (c < 1 || c > 50) {
@@ -76,7 +77,7 @@ void contrast(int c) {
   Uart3::getInstance().putChar(0xFE);
   Uart3::getInstance().putChar(0x52);
   Uart3::getInstance().putChar(c);
-  delay_ms(1);
+  vTaskDelay(1);
 }
 void brightness(int b) {
   if (b < 1 || b > 8) {
@@ -106,22 +107,22 @@ void changeBAUDrate(int r) {
   Uart3::getInstance().putChar(0xFE);
   Uart3::getInstance().putChar(0x61);
   Uart3::getInstance().putChar(r);
-  delay_ms(5);
+  vTaskDelay(5);
 }
 void displayFirmware(void) {
   Uart3::getInstance().putChar(0xFE);
   Uart3::getInstance().putChar(0x70);
-  delay_ms(5);
+  vTaskDelay(5);
 }
 void displayBAUDrate(void) {
   Uart3::getInstance().putChar(0xFE);
   Uart3::getInstance().putChar(0x71);
-  delay_ms(10);
+  vTaskDelay(10);
 }
 void displayI2C(void) {
   Uart3::getInstance().putChar(0xFE);
   Uart3::getInstance().putChar(0x72);
-  delay_ms(5);
+  vTaskDelay(5);
 }
 
 void turnOffDisplay(void) {
@@ -142,40 +143,48 @@ void scroll(char *s) {
     s++;
   }
   if (*s != '\0') {
-    delay_ms(1000);
+    vTaskDelay(1000);
     while (*s != '\0') {
       displayLeft();
       Uart3::getInstance().putChar(*s);
-      delay_ms(800);
+      vTaskDelay(800);
       s++;
     }
   }
 }
 
 void manuelFirstScroll(std::string s) {
+  char *c = new char[17]; // or
   if (s.length() > 16) {
     for (int i = 0; i < (s.length() - 16 + 1); i++) {
       setCursor(1, 1);
       std::string sub = s.substr(i, 16);
-      char *c = new char[sub.length() + 1]; // or
       std::strcpy(c, sub.c_str());
       putString(c);
-      delay_ms(800);
+      vTaskDelay(500);
       // delete[] c;
     }
+  } else {
+    setCursor(1, 1);
+    std::strcpy(c, s.c_str());
+    putString(c);
   }
 }
 void manuelSecondScroll(std::string s) {
+  char *c = new char[17]; // or
   if (s.length() > 16) {
     for (int i = 0; i < (s.length() - 16 + 1); i++) {
       setCursor(2, 1);
       std::string sub = s.substr(i, 16);
-      char *c = new char[sub.length() + 1]; // or
       std::strcpy(c, sub.c_str());
       putString(c);
-      delay_ms(800);
+      vTaskDelay(500);
       // delete[] c;
     }
+  } else {
+    setCursor(2, 1);
+    std::strcpy(c, s.c_str());
+    putString(c);
   }
 }
 void manuelSecondScroll(std::string s1, std::string s2) {
@@ -197,8 +206,8 @@ void manuelSecondScroll(std::string s1, std::string s2) {
   //     setCursor(2, 1);
   //     std::strcpy(c, sub.c_str());
   //     putString(c);
-  //     delay_ms(800);
+  //     vTaskDelay(800);
   // delete[] c;
-//}
-//}
+  //}
+  //}
 }
