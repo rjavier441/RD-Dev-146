@@ -50,6 +50,7 @@
 
 #include "io.hpp"
 #include "storage.hpp"
+#include "LCD.hpp"
 
 /* BEGIN RJ's Defines */
 // VS1053 Audio Codec-Specific Defines
@@ -130,6 +131,10 @@ void changeState (mp3_state new_state);
 
 void initialize(void *p)
 {
+    initLCD();
+    setCursor(1,1);
+    cursorBlinkOn();
+    clearLCD();
     // Create mutexes for specific parameters
     xKeypadValueMutex = xSemaphoreCreateMutex();
     xStateMutex = xSemaphoreCreateMutex();
@@ -834,8 +839,15 @@ void controlUnit (void* p) {
 
 void display_lcd(char *row1, char *row2)
 {
-    printf("%s\n", row1);
-    printf("%s\n", row2);
+    clearLCD();
+    setCursor(1,1);
+    // putChar(row1[1]);
+    putString(row1);
+    setCursor(2,1);
+    // putChar(row2[1]);
+    putString(row2);
+    // printf("%s\n", row1);
+    // printf("%s\n", row2);
 }
 
 //if button pressed
