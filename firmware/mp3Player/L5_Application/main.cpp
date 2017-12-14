@@ -30,7 +30,7 @@
 #include "uart3.hpp"
 #include "utilities.h"
 
-
+#include "nrf_stream.hpp"
 
 /* BEGIN RJ's Includes */
 #include "FreeRTOS.h"   // FreeRTOS constructs
@@ -47,6 +47,10 @@
 #include "ssp1.h"       //maybe to speak to lcd?
 #include "ff.h"         //file access fatfs
 #include <stdio.h>      //printf
+
+#include "io.hpp"
+#include "storage.hpp"
+#include "LCD.hpp"
 
 /* BEGIN RJ's Defines */
 // VS1053 Audio Codec-Specific Defines
@@ -71,14 +75,15 @@
 /* END RJ's Defines */
 
 FIL file;
+FIL file2;
 
 TaskHandle_t xinitialize = NULL;
 TaskHandle_t xplay_music = NULL;
-TaskHandle_t xbuttons = NULL;
 
 /* BEGIN RJ's Globals */
 TaskHandle_t xHandleKeypadRead = NULL;
 TaskHandle_t xHandleControlUnit = NULL;
+TaskHandle_t xHandleLcdMenu = NULL;
 char last_key = '\0';
 uint8_t repeatCnt = 0;
 uint8_t currentVolume = 0x2F;    // the volume val for both channels; half-volume = 0x7F = 127; max = 0x00 = 0; min = 0xFE = 254
@@ -93,8 +98,20 @@ typedef enum {
 mp3_state currentState = IDLE;
 mp3_state prevState = IDLE;
 /* END RJ's Globals */
+typedef enum{
+    INITIAL,                 //initial menu display
+    PLAYSONG,               //displays song list
+    PLAYPLAYLIST,           //displays playlists to choose from
+    CREATEPLAYLIST          //create a new playlist
+}menu_state_t;
 
-char pFilename[MAX_FILE_NAME_SIZE] = "1:Wet Dreamz.mp3";
+typedef struct{
+    menu_state_t state;
+    char filename[MAX_FILE_NAME_SIZE];
+    int file_offset;
+}menu_packet_t;
+
+char pFilename[MAX_FILE_NAME_SIZE] = "1:Songs/Despasito.mp3";
 
 /* BEGIN RJ's Mutexes */
 SemaphoreHandle_t xKeypadValueMutex = NULL; // for protecting "last_key" and "repeatCnt"
@@ -104,6 +121,10 @@ SemaphoreHandle_t xSpiMutex = NULL;         // for protecting SSP0 bus use
 SemaphoreHandle_t xFileMutex = NULL;        // for protecting "pFilename", "fileStatus", and "file"
 /* END RJ's Mutexes */
 
+//Queues
+QueueHandle_t button_pushed = xQueueCreate(1, sizeof(uint8_t));     //'1' will be down '2' will be back '3' will be enter
+QueueHandle_t menu_block = xQueueCreate(1, sizeof(menu_packet_t));
+
 /* BEGIN RJ's Function Declarations */
 bool volumeSet (uint8_t val);
 void changeState (mp3_state new_state);
@@ -111,6 +132,10 @@ void changeState (mp3_state new_state);
 
 void initialize(void *p)
 {
+    initLCD();
+    setCursor(1,1);
+    // cursorBlinkOn();
+    clearLCD();
     // Create mutexes for specific parameters
     xKeypadValueMutex = xSemaphoreCreateMutex();
     xStateMutex = xSemaphoreCreateMutex();
@@ -209,7 +234,36 @@ void initialize(void *p)
 
         //SD read
         
+        //create songlist of song directory
 
+        //Directory stuff
+
+        //deletes the old directory song list
+        f_unlink("1:songlist.txt");
+
+        DIR dp;
+        FRESULT status = FR_INT_ERR;
+        FILINFO info;
+        char Lfname[_MAX_LFN];
+        char songname[_MAX_LFN];
+        //end of directory stuff
+        f_opendir(&dp, "1:/Songs");
+
+        while(1)
+        {
+            info.lfname = Lfname;
+            info.lfsize = sizeof(Lfname);
+
+            status = f_readdir(&dp, &info);
+            if(FR_OK != status || !info.fname[0]) 
+            {
+                f_closedir(&dp);
+                break;
+            }
+
+            int length = sprintf(songname, "1:%s\n", Lfname);
+            Storage::append("1:songlist.txt", &songname, length);
+        }
         f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ);
         fileStatus = FILE_STATUS_OPEN;
     }
@@ -224,6 +278,7 @@ void play_music(void *p)
     {
         if (xStateMutex != NULL) {
             if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
+                printf("%d", currentState);
                 if (currentState != PLAYING) {
                     xSemaphoreGive(xStateMutex);
                     vTaskSuspend(NULL); // have this task suspend itself (in an effort to prevent a case where the CU pauses this task while p1.19 is still LOW)
@@ -233,8 +288,6 @@ void play_music(void *p)
                 {
                     static uint32_t offset = 0;
                     char buffer[32] = {0};
-                    static int send_this = 0;
-                    static int put_here = 0;
                     unsigned int bytesRead = 0;
             
                     if (xFileMutex != NULL) {
@@ -276,6 +329,80 @@ void play_music(void *p)
                 }
             }
         }
+    }
+}
+
+void menu_toc(void *p)
+{
+
+    char *pFilename = "1:table_of_contents.txt";
+    f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ); 
+    unsigned int bytesRead = 0;
+
+
+    int offset = 0;
+
+    for(int j = 0; j < 5; j++)
+    {
+        f_lseek(&file, offset);
+        printf("offset: %d\n", offset);
+        char songname[32] = {0};
+        char extract[32] = {0};
+        f_read(&file, &songname, 32, &bytesRead);
+        sscanf(songname, "%s", extract);
+
+        //extracting the song name
+        for(int i = 0; i < 32; i++)
+        {
+            if(extract[i] == '\0')
+            {
+                printf("\n");
+                printf("line length: %d\n", i);
+                offset += (i+1);
+                break;
+            }
+            printf("%c", extract[i]);
+        }
+
+
+    }
+
+    while(1)
+    {
+
+    }
+}
+
+void dir_test(void *p)
+{
+    DIR dp;
+    FRESULT status = FR_INT_ERR;
+    FILINFO info;
+    char Lfname[_MAX_LFN];
+
+    if (FR_OK == (status = f_opendir(&dp, "1:")))
+    {
+        // printf("%d opened successfully.\n", status);
+    }
+    else
+    {
+        // printf("%d failed.\n", status);
+    }
+
+    while(1)
+    {
+        //lock this inside a blocking queue. wait for button press
+        info.lfname = Lfname;
+        info.lfsize = sizeof(Lfname);
+
+        status = f_readdir(&dp, &info);
+        if(FR_OK != status || !info.fname[0]) 
+        {
+            f_closedir(&dp);
+            f_opendir(&dp, "1:");
+        }
+        printf("%s", Lfname);            
+        printf("\n-----------\n");            
     }
 }
 
@@ -435,7 +562,7 @@ bool volumeSet (uint8_t val) {
 }
 
 // @function    changeSong
-// @parameter   newSong - a c-string of the file name to search for (i.e. "1:mySong.mp3")
+// @parameter   newSong - a c-string of the file name to search for (i.e. "1:Songs/mySong.mp3")
 // @returns     n/a
 // @details     This function allows the user to change the current song to the one listed in pFilename
 // @note        This function assumes you've appropriately updated "pFilename" before calling it
@@ -473,6 +600,8 @@ void controlUnit (void* p) {
     //  10 - repeat mode (repeat the current song over and over)
     static uint8_t cuSettings = 0x00;
     bool invokeSongChange = false;
+    menu_packet_t lcd_state;
+    uint8_t button_lcd = 0;
 
     // Main control loop
     while (1) {
@@ -481,6 +610,11 @@ void controlUnit (void* p) {
         // (Contextual) Continuous Playback
         if (xStateMutex != NULL) {
             if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
+
+                #if DBG_CU
+                u0_dbg_printf("CS: %d PS: %d\n", currentState, prevState);
+                #endif
+
                 switch (currentState) {
                     case IDLE: {    // If the song has finished/stopped, or if nothing has happened yet
                         if (prevState == IDLE) {    // here, the mp3 has just initialized
@@ -495,7 +629,7 @@ void controlUnit (void* p) {
                                     // ...
 
                                     // Then change the song name like this...
-                                    strncpy(pFilename, "1:Cant_Feel_My_Face.mp3", MAX_FILE_NAME_SIZE);
+                                    strncpy(pFilename, "1:Songs/Believer.mp3", MAX_FILE_NAME_SIZE);
                                     pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
 
                                     // Request a song change to the new song
@@ -510,7 +644,7 @@ void controlUnit (void* p) {
                                     // ...
 
                                     // Then change the song name like this...
-                                    strncpy(pFilename, "1:Wet Dreamz.mp3", MAX_FILE_NAME_SIZE);
+                                    strncpy(pFilename, "1:Songs/Despasito.mp3", MAX_FILE_NAME_SIZE);
                                     pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
 
                                     // Request a song change to the new song
@@ -530,7 +664,6 @@ void controlUnit (void* p) {
                     }
                 }
                 xSemaphoreGive(xStateMutex);
-
                 // After song change, only autoplay the song if the prev song wasn't paused or stopped
                 if (invokeSongChange == true) {
                     invokeSongChange = false;
@@ -568,7 +701,6 @@ void controlUnit (void* p) {
                             }
                         }
                     }
-
                     // Since music task suspends itself when currentState != PLAYING,
                     // we must restore the PLAYING state and resume it ourselves
                     changeState(PLAYING);
@@ -616,6 +748,31 @@ void controlUnit (void* p) {
                             u0_dbg_printf("vol:-%5fdB\n", ((float) currentVolume) * 0.5);
                             #endif
                             changeState(PLAYING);
+                            break;
+                        }
+                        case '4': { //down button
+                            button_lcd = 1;
+                            if (xQueueSend(button_pushed, &button_lcd, portMAX_DELAY) == pdTRUE) {
+                                u0_dbg_printf("Down button sent!\n");
+                            } else {
+                                u0_dbg_printf("nope\n");
+                            }
+                            vTaskResume(xHandleLcdMenu);
+                            break;
+                        }
+
+                        case '5': { //back button
+                            button_lcd = 2;
+                            xQueueSend(button_pushed, &button_lcd, portMAX_DELAY);
+                            vTaskResume(xHandleLcdMenu);
+                            break;
+                        }
+
+                        case '6': { //enter button
+                            button_lcd = 3;
+                            xQueueSend(button_pushed, &button_lcd, portMAX_DELAY);
+                            vTaskResume(xHandleLcdMenu);
+                            xQueueReceive(menu_block, &lcd_state, portMAX_DELAY);
                             break;
                         }
                         case 'A': { // Increase Volume
@@ -692,6 +849,390 @@ void controlUnit (void* p) {
 /* END RJ's Code */
 
 
+void display_lcd(char *row1, char *row2)
+{
+    clearLCD();
+    setCursor(1,1);
+    // putChar(row1[1]);
+    putString(row1);
+    setCursor(2,1);
+    // putChar(row2[1]);
+    putString(row2);
+    // u0_dbg_printf("%s\n", row1);
+    // u0_dbg_printf("%s\n", row2);
+}
+
+//if button pressed
+//@file_dir '0' file '1' dir
+int update_screen(char *row1, char *row2, int offset, unsigned int bytesRead)
+{
+    f_lseek(&file2, offset);
+    printf("offset: %d\n", offset);
+    char songname[32] = {0};
+    char extract[32] = {0};
+    f_read(&file2, &songname, 32, &bytesRead);
+    sscanf(songname, "%s", extract);
+    
+    *row1 = {0};
+    *row2 = {0};
+
+    for(int i = 0; i < 32; i++)
+    {
+        if(extract[i] == '\0')
+        {
+            row1[i] = extract[i];
+            offset += (i+1);
+            break;
+        }
+        row1[i] = extract[i];
+    }
+
+    f_lseek(&file2, offset);
+    printf("offset: %d\n", offset);
+    *songname = {0};
+    *extract = {0};
+    f_read(&file2, &songname, 32, &bytesRead);
+    sscanf(songname, "%s", extract);
+    
+    for(int i = 0; i < 32; i++)
+    {
+        if(extract[i] == '\0')
+        {
+            row2[i] = extract[i];
+            break;
+        }
+        row2[i] = extract[i];
+    }
+
+    if(bytesRead < 2)
+    {
+        offset = 0;
+    }
+    return offset;
+}    
+
+
+void lcd_menu(void *p)
+{
+    //Directory stuff
+    DIR dp;
+    FRESULT status = FR_INT_ERR;
+    FILINFO info;
+    char Lfname[_MAX_LFN];
+    //end of directory stuff
+
+    menu_packet_t menu_state;
+    menu_state.state = INITIAL;
+    uint8_t button_pressed = 0;
+
+    char lcd_top_row[32] = {0};
+    char lcd_bottom_row[32] = {0};
+
+    char *anotherFileName = "1:table_of_contents.txt";
+    f_open(&file2, anotherFileName, FA_OPEN_EXISTING | FA_READ); 
+    static int offset = 0;
+    static unsigned int bytesRead = 0;
+
+    //fill in top row
+    f_lseek(&file2, offset);
+    printf("offset: %d\n", offset);
+    char songname[32] = {0};
+    f_read(&file2, &songname, 32, &bytesRead);
+    sscanf(songname, "%s", lcd_top_row);
+
+    //extracting the song name
+    for(int i = 0; i < 32; i++)
+    {
+        if(lcd_top_row[i] == '\0')
+        {
+            // printf("\n");
+            // printf("line length: %d\n", i);
+            offset += (i+1);
+            break;
+        }
+        // printf("%c", lcd_top_row[i]);
+    }
+
+    //fills in bottom row
+    f_lseek(&file2, offset);
+    printf("offset: %d\n", offset);
+    *songname = {0};
+    f_read(&file2, &songname, 32, &bytesRead);
+    sscanf(songname, "%s", lcd_bottom_row);
+
+    //extracting the song name
+    for(int i = 0; i < 32; i++)
+    {
+        if(lcd_bottom_row[i] == '\0')
+        {
+            // printf("\n");
+            // printf("line length: %d\n", i);
+            offset += (i+1);
+            break;
+        }
+        // printf("%c", lcd_bottom_row[i]);
+    }
+
+    display_lcd(lcd_top_row, lcd_bottom_row);
+
+    while(1)
+    {
+        vTaskDelay(50);
+        switch(menu_state.state)
+        {
+            //displaying the initial menu
+            case INITIAL:
+            if(xQueueReceive(button_pushed, &button_pressed, portMAX_DELAY))
+            {
+                if(button_pressed == 1)
+                {
+                    f_open(&file2, anotherFileName, FA_OPEN_EXISTING | FA_READ); 
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    display_lcd(lcd_top_row, lcd_bottom_row);
+                    f_close(&file2);
+                }
+                else if(button_pressed == 3)
+                {
+                    xQueueSend(menu_block, &menu_state, portMAX_DELAY);
+
+                    if (strcmp(lcd_top_row,"Play_Song") == 0)
+                    {
+                        menu_state.state = PLAYSONG;
+                        f_opendir(&dp, "1:/Songs");
+                        //clears screen and updates screen
+                        clearLCD();
+
+                        info.lfname = lcd_top_row;
+                        info.lfsize = sizeof(lcd_top_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Songs");
+                        }
+
+                        info.lfname = lcd_bottom_row;
+                        info.lfsize = sizeof(lcd_bottom_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Songs");
+                        }  
+
+                        display_lcd(lcd_top_row, lcd_bottom_row);
+                    }
+                    else if(strcmp(lcd_top_row,"Play_Playlist") == 0)
+                    {
+                        menu_state.state = PLAYPLAYLIST;
+                        f_opendir(&dp, "1:/Playlists");
+
+                        //clears screen and updates screen
+                        clearLCD();
+
+                        info.lfname = lcd_top_row;
+                        info.lfsize = sizeof(lcd_top_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Playlists");
+                        }
+
+                        info.lfname = lcd_bottom_row;
+                        info.lfsize = sizeof(lcd_bottom_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Playlists");
+                        }  
+
+                        display_lcd(lcd_top_row, lcd_bottom_row);
+                    }
+                    else if(strcmp(lcd_top_row,"Create_Playlist") == 0)
+                    {
+                        menu_state.state = CREATEPLAYLIST;
+                        f_opendir(&dp, "1:/Songs");
+                        //clears screen and updates screen
+                        clearLCD();
+
+                        info.lfname = lcd_top_row;
+                        info.lfsize = sizeof(lcd_top_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Songs");
+                        }
+
+                        info.lfname = lcd_bottom_row;
+                        info.lfsize = sizeof(lcd_bottom_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Songs");
+                        }  
+
+                        display_lcd(lcd_top_row, lcd_bottom_row);
+                    }
+                }
+            }
+            break;
+            //display the song list
+            case PLAYSONG:
+            if(xQueueReceive(button_pushed, &button_pressed, portMAX_DELAY))     //if button down is pressed
+            {
+                //lock this inside a blocking queue. wait for button press
+                if(button_pressed == 1)
+                {
+                    for(int i = 0; i < 32; i++)
+                    {
+                        lcd_top_row[i] = lcd_bottom_row[i];
+                    }
+
+                    info.lfname = lcd_bottom_row;
+                    info.lfsize = sizeof(lcd_bottom_row);
+
+                    status = f_readdir(&dp, &info);
+                    printf("%d", status);
+                    if(FR_OK != status || !info.fname[0]) 
+                    {
+                        f_closedir(&dp);
+                        f_opendir(&dp, "1:/Songs");
+                    }
+                    // printf("%s", lcd_bottom_row);            
+                    printf("\n-----------\n");    
+                
+                    display_lcd(lcd_top_row, lcd_bottom_row);   
+                }
+                else if(button_pressed == 2)
+                {
+                    menu_state.state = INITIAL;
+
+                    offset = 0;
+                    f_open(&file2, anotherFileName, FA_OPEN_EXISTING | FA_READ); 
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    display_lcd(lcd_top_row, lcd_bottom_row);
+                    f_close(&file2);
+                }
+                else if(button_pressed == 3)
+                {
+                    //tells menu to play the song specified by lcd_top_row
+                    sprintf(menu_state.filename, "1:%s\n", lcd_top_row);
+                    // menu_state.file_offset = offset;
+                    xQueueSend(menu_block, &menu_state, portMAX_DELAY);
+                }
+            }
+            break;
+
+            //play a playlist
+            case PLAYPLAYLIST:
+            if(xQueueReceive(button_pushed, &button_pressed, portMAX_DELAY))         //choosing by button down
+            {
+                if(button_pressed == 1)
+                {    
+                    //lock this inside a blocking queue. wait for button press
+                    for(int i = 0; i < 32; i++)
+                    {
+                        lcd_top_row[i] = lcd_bottom_row[i];
+                    }
+
+                    info.lfname = lcd_bottom_row;
+                    info.lfsize = sizeof(lcd_bottom_row);
+
+                    status = f_readdir(&dp, &info);
+                    if(FR_OK != status || !info.fname[0]) 
+                    {
+                        f_closedir(&dp);
+                        f_opendir(&dp, "1:/Playlists");
+                    }      
+                    printf("\n-----------\n");    
+                
+                    display_lcd(lcd_top_row, lcd_bottom_row);    
+                }
+                else if(button_pressed == 2)
+                {
+                    menu_state.state = INITIAL;
+                    offset = 0;
+                    f_open(&file2, anotherFileName, FA_OPEN_EXISTING | FA_READ); 
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    display_lcd(lcd_top_row, lcd_bottom_row);
+                    f_close(&file2);
+                }
+                else if(button_pressed == 3)         //selecting playlist
+                {
+                    //play playlist
+                    sprintf(menu_state.filename, "1:%s\n", lcd_top_row);
+                    xQueueSend(menu_block, &menu_state, portMAX_DELAY);
+
+                    // f_open(&file, filename, FA_OPEN_EXISTING | FA_READ);
+                }
+            }
+            break;
+
+            //creating a playlist
+            case CREATEPLAYLIST:
+            if(xQueueReceive(button_pushed, &button_pressed, portMAX_DELAY))             //enters song list
+            {
+                if(button_pressed == 1)
+                {
+                    //lock this inside a blocking queue. wait for button press
+                    for(int i = 0; i < 32; i++)
+                    {
+                        lcd_top_row[i] = lcd_bottom_row[i];
+                    }
+
+                    info.lfname = lcd_bottom_row;
+                    info.lfsize = sizeof(lcd_bottom_row);
+
+                    status = f_readdir(&dp, &info);
+                    if(FR_OK != status || !info.fname[0]) 
+                    {
+                        f_closedir(&dp);
+                        f_opendir(&dp, "1:/Songs");
+                    }
+                    // printf("%s", lcd_bottom_row);            
+                    printf("\n-----------\n");    
+                
+                    display_lcd(lcd_top_row, lcd_bottom_row);    
+                }
+                else if (button_pressed == 2)
+                {
+                    menu_state.state = INITIAL;
+                    offset = 0;
+                    f_open(&file2, anotherFileName, FA_OPEN_EXISTING | FA_READ); 
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    display_lcd(lcd_top_row, lcd_bottom_row);
+                    f_close(&file2);
+                }
+                else if(button_pressed == 3)        //selects a song to add to playlist
+                {
+                    int length = sprintf(songname, "1:%s\n", lcd_top_row);
+                    Storage::append("1:Playlists/playlist1.txt", &songname, length);
+                    xQueueSend(menu_block, &menu_state, portMAX_DELAY);
+                }
+            }
+            break;
+
+
+            default:
+                break;
+        }
+        // have this task suspend itself
+        vTaskSuspend(NULL);
+    }
+}
+
+
+
 
 /**
  * The main() creates tasks or "threads".  See the documentation of scheduler_task class at scheduler_task.hpp
@@ -724,8 +1265,13 @@ int main(void)
     /* Consumes very little CPU, but need highest priority to handle mesh network ACKs */
     scheduler_add_task(new wirelessTask(PRIORITY_CRITICAL));
 
-    xTaskCreate(initialize, "initialize", STACK_BYTES(2048), NULL, PRIORITY_CRITICAL, &xinitialize);
+    xTaskCreate(initialize, "initialize", STACK_BYTES(2048), NULL, PRIORITY_HIGH, &xinitialize);
     xTaskCreate(play_music, "play_music", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, &xplay_music);
+
+    // xTaskCreate(menu_toc, "menu_toc", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
+    // xTaskCreate(dir_test, "dir_test", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, NULL);
+
+    xTaskCreate(lcd_menu, "lcd_menu", STACK_BYTES(2048), NULL, PRIORITY_MEDIUM, &xHandleLcdMenu);
 
     /* Change "#if 0" to "#if 1" to run period tasks; @see period_callbacks.cpp */
     #if 0
@@ -797,7 +1343,7 @@ int main(void)
 
     /* BEGIN RJ's Code */
     xTaskCreate(keypadRead, "keypad", STACK_BYTES(1024), 0, PRIORITY_MEDIUM, &xHandleKeypadRead);
-    xTaskCreate(controlUnit, "mp3_cu", STACK_BYTES(1024), 0, PRIORITY_HIGH, &xHandleControlUnit);
+    xTaskCreate(controlUnit, "mp3_cu", STACK_BYTES(2048), 0, PRIORITY_HIGH, &xHandleControlUnit);
     /* END RJ's Code */
 
     scheduler_start(); ///< This shouldn't return
