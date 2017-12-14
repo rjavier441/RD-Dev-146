@@ -1,7 +1,7 @@
 #ifndef _LCD_H
 #define _LCD_H
 
-#include "lpc17xx.h"
+// #include "lpc17xx.h"
 #include <string>
 
 #define DEFAULT_BRIGHTNESS 8
