@@ -133,7 +133,7 @@ void initialize(void *p)
 {
     initLCD();
     setCursor(1,1);
-    cursorBlinkOn();
+    // cursorBlinkOn();
     clearLCD();
     // Create mutexes for specific parameters
     xKeypadValueMutex = xSemaphoreCreateMutex();
@@ -277,6 +277,7 @@ void play_music(void *p)
     {
         if (xStateMutex != NULL) {
             if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
+                printf("%d", currentState);
                 if (currentState != PLAYING) {
                     xSemaphoreGive(xStateMutex);
                     vTaskSuspend(NULL); // have this task suspend itself (in an effort to prevent a case where the CU pauses this task while p1.19 is still LOW)
@@ -657,7 +658,6 @@ void controlUnit (void* p) {
                     }
                 }
                 xSemaphoreGive(xStateMutex);
-
                 // After song change, only autoplay the song if the prev song wasn't paused or stopped
                 if (invokeSongChange == true) {
                     invokeSongChange = false;
@@ -695,7 +695,6 @@ void controlUnit (void* p) {
                             }
                         }
                     }
-
                     // Since music task suspends itself when currentState != PLAYING,
                     // we must restore the PLAYING state and resume it ourselves
                     changeState(PLAYING);
@@ -900,6 +899,11 @@ int update_screen(char *row1, char *row2, int offset, unsigned int bytesRead)
 }    
 
 
+void displaySongs(char *row1, char *row2)
+{
+    clearLCD();
+
+}
 
 void lcd_menu(void *p)
 {
@@ -988,15 +992,92 @@ void lcd_menu(void *p)
                     {
                         menu_state.state = PLAYSONG;
                         f_opendir(&dp, "1:/Songs");
+
+                        //clears screen and updates screen
+                        clearLCD();
+
+                        info.lfname = lcd_top_row;
+                        info.lfsize = sizeof(lcd_top_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Songs");
+                        }
+
+                        info.lfname = lcd_bottom_row;
+                        info.lfsize = sizeof(lcd_bottom_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Songs");
+                        }  
+
+                        display_lcd(lcd_top_row, lcd_bottom_row);
+
                     }
                     else if(strcmp(lcd_top_row,"Play_Playlist") == 0)
                     {
                         menu_state.state = PLAYPLAYLIST;
                         f_opendir(&dp, "1:/Playlists");
+
+                        //clears screen and updates screen
+                        clearLCD();
+
+                        info.lfname = lcd_top_row;
+                        info.lfsize = sizeof(lcd_top_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Playlists");
+                        }
+
+                        info.lfname = lcd_bottom_row;
+                        info.lfsize = sizeof(lcd_bottom_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Playlists");
+                        }  
+
+                        display_lcd(lcd_top_row, lcd_bottom_row);
+
                     }
                     else if(strcmp(lcd_top_row,"Create_Playlist") == 0)
                     {
                         menu_state.state = CREATEPLAYLIST;
+
+                        //clears screen and updates screen
+                        clearLCD();
+
+                        info.lfname = lcd_top_row;
+                        info.lfsize = sizeof(lcd_top_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Songs");
+                        }
+
+                        info.lfname = lcd_bottom_row;
+                        info.lfsize = sizeof(lcd_bottom_row);
+
+                        status = f_readdir(&dp, &info);
+                        if(FR_OK != status || !info.fname[0]) 
+                        {
+                            f_closedir(&dp);
+                            f_opendir(&dp, "1:/Songs");
+                        }  
+
+                        display_lcd(lcd_top_row, lcd_bottom_row);
                     }
                 }
             }
@@ -1031,6 +1112,13 @@ void lcd_menu(void *p)
                 else if(button_pressed == 2)
                 {
                     menu_state.state = INITIAL;
+
+                    offset = 0;
+                    f_open(&file2, pFilename, FA_OPEN_EXISTING | FA_READ); 
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    display_lcd(lcd_top_row, lcd_bottom_row);
+                    f_close(&file2);
                 }
                 else if(button_pressed == 3)
                 {
@@ -1070,6 +1158,13 @@ void lcd_menu(void *p)
                 else if(button_pressed == 2)
                 {
                     menu_state.state = INITIAL;
+
+                    offset = 0;
+                    f_open(&file2, pFilename, FA_OPEN_EXISTING | FA_READ); 
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    display_lcd(lcd_top_row, lcd_bottom_row);
+                    f_close(&file2);
                 }
                 else if(button_pressed == 3)         //selecting playlist
                 {
@@ -1111,6 +1206,13 @@ void lcd_menu(void *p)
                 else if (button_pressed == 2)
                 {
                     menu_state.state = INITIAL;
+
+                    offset = 0;
+                    f_open(&file2, pFilename, FA_OPEN_EXISTING | FA_READ); 
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    offset = update_screen(lcd_top_row, lcd_bottom_row, offset, bytesRead);
+                    display_lcd(lcd_top_row, lcd_bottom_row);
+                    f_close(&file2);
                 }
                 else if(button_pressed == 3)        //selects a song to add to playlist
                 {
