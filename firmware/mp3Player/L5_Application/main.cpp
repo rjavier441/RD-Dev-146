@@ -103,13 +103,12 @@ typedef enum{
     PLAYSONG,               //displays song list
     PLAYPLAYLIST,           //displays playlists to choose from
     CREATEPLAYLIST          //create a new playlist
-}menu_state_t;
+} menu_state_t;
 
 typedef struct{
     menu_state_t state;
     char filename[MAX_FILE_NAME_SIZE];
-    int file_offset;
-}menu_packet_t;
+} menu_packet_t;
 
 char pFilename[MAX_FILE_NAME_SIZE] = "1:Songs/Despasito.mp3";
 
@@ -278,7 +277,6 @@ void play_music(void *p)
     {
         if (xStateMutex != NULL) {
             if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
-                printf("%d", currentState);
                 if (currentState != PLAYING) {
                     xSemaphoreGive(xStateMutex);
                     vTaskSuspend(NULL); // have this task suspend itself (in an effort to prevent a case where the CU pauses this task while p1.19 is still LOW)
@@ -329,80 +327,6 @@ void play_music(void *p)
                 }
             }
         }
-    }
-}
-
-void menu_toc(void *p)
-{
-
-    char *pFilename = "1:table_of_contents.txt";
-    f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ); 
-    unsigned int bytesRead = 0;
-
-
-    int offset = 0;
-
-    for(int j = 0; j < 5; j++)
-    {
-        f_lseek(&file, offset);
-        printf("offset: %d\n", offset);
-        char songname[32] = {0};
-        char extract[32] = {0};
-        f_read(&file, &songname, 32, &bytesRead);
-        sscanf(songname, "%s", extract);
-
-        //extracting the song name
-        for(int i = 0; i < 32; i++)
-        {
-            if(extract[i] == '\0')
-            {
-                printf("\n");
-                printf("line length: %d\n", i);
-                offset += (i+1);
-                break;
-            }
-            printf("%c", extract[i]);
-        }
-
-
-    }
-
-    while(1)
-    {
-
-    }
-}
-
-void dir_test(void *p)
-{
-    DIR dp;
-    FRESULT status = FR_INT_ERR;
-    FILINFO info;
-    char Lfname[_MAX_LFN];
-
-    if (FR_OK == (status = f_opendir(&dp, "1:")))
-    {
-        // printf("%d opened successfully.\n", status);
-    }
-    else
-    {
-        // printf("%d failed.\n", status);
-    }
-
-    while(1)
-    {
-        //lock this inside a blocking queue. wait for button press
-        info.lfname = Lfname;
-        info.lfsize = sizeof(Lfname);
-
-        status = f_readdir(&dp, &info);
-        if(FR_OK != status || !info.fname[0]) 
-        {
-            f_closedir(&dp);
-            f_opendir(&dp, "1:");
-        }
-        printf("%s", Lfname);            
-        printf("\n-----------\n");            
     }
 }
 
@@ -562,7 +486,7 @@ bool volumeSet (uint8_t val) {
 }
 
 // @function    changeSong
-// @parameter   newSong - a c-string of the file name to search for (i.e. "1:Songs/mySong.mp3")
+// @parameter   n/a
 // @returns     n/a
 // @details     This function allows the user to change the current song to the one listed in pFilename
 // @note        This function assumes you've appropriately updated "pFilename" before calling it
@@ -600,6 +524,7 @@ void controlUnit (void* p) {
     //  10 - repeat mode (repeat the current song over and over)
     static uint8_t cuSettings = 0x00;
     bool invokeSongChange = false;
+    bool lcdActionRequest = false;
     menu_packet_t lcd_state;
     uint8_t button_lcd = 0;
 
@@ -612,58 +537,88 @@ void controlUnit (void* p) {
             if (xSemaphoreTake(xStateMutex, portMAX_DELAY) == pdTRUE) {
 
                 #if DBG_CU
-                u0_dbg_printf("CS: %d PS: %d\n", currentState, prevState);
+                // u0_dbg_printf("CS: %d PS: %d\n", currentState, prevState);
                 #endif
 
-                switch (currentState) {
-                    case IDLE: {    // If the song has finished/stopped, or if nothing has happened yet
-                        if (prevState == IDLE) {    // here, the mp3 has just initialized
-                            // Do nothing; the user has to select a song and hit play, first
-                        } else if (prevState == PLAYING || prevState == PAUSED) {  // here, the mp3 has paused or has just finished a song
-                            // Determine what to do based off of "cuSettings[1:0]"
-                            switch (cuSettings & 0x03) {
-                                // Playthrough Mode (default)
-                                case 0x00: {
-                                    // Add some one-time, alphabetical-order song-playing logic here...
-                                    // ...
-                                    // ...
+                // If prompted by the user via the lcd_menu task, handle a user request to change the song/play a playlist
+                if (lcdActionRequest) {
+                    lcdActionRequest = false;
+                    switch (lcd_state.state) {
+                        case INITIAL: {
+                            // Do nothing
+                            break;
+                        }
+                        case PLAYSONG: {
+                            // User manually wants to change the song
+                            strncpy(pFilename, lcd_state.filename, MAX_FILE_NAME_SIZE);
+                            pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
+                            invokeSongChange = true;    // request a song change to the new song
+                            break;
+                        }
+                        case PLAYPLAYLIST: {
+                            // User wants to play a playlist
 
-                                    // Then change the song name like this...
-                                    strncpy(pFilename, "1:Songs/Believer.mp3", MAX_FILE_NAME_SIZE);
-                                    pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
+                            break;
+                        }
+                        case CREATEPLAYLIST: {
+                            // Do nothing; lcd_menu task will handle this...
+                            break;
+                        }
+                    }
+                }
 
-                                    // Request a song change to the new song
-                                    invokeSongChange = true;
-                                    break;
-                                }
+                // Else, determine mp3 player behavior based off of "cuSettings[1:0]" (i.e. selecting next song without user intervention)
+                else {
+                    switch (currentState) {
+                        case IDLE: {    // If the song has finished/stopped, or if nothing has happened yet
+                            if (prevState == IDLE) {    // here, the mp3 has just initialized
+                                // Do nothing; the user has to select a song and hit play, first
+                            } else if (prevState == PLAYING || prevState == PAUSED) {  // here, the mp3 has paused or has just finished a song
+                                switch (cuSettings & 0x03) {
+                                    // Playthrough Mode (default)
+                                    case 0x00: {
+                                        // Add some one-time, alphabetical-order song-playing logic here...
+                                        // ...
+                                        // ...
 
-                                // Shuffle Mode
-                                case 0x01: {
-                                    // Add some random-selection, never-ending song-playing logic here...
-                                    // ...
-                                    // ...
+                                        // Then change the song name like this...
+                                        strncpy(pFilename, "1:Songs/Believer.mp3", MAX_FILE_NAME_SIZE);
+                                        pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
 
-                                    // Then change the song name like this...
-                                    strncpy(pFilename, "1:Songs/Despasito.mp3", MAX_FILE_NAME_SIZE);
-                                    pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
+                                        // Request a song change to the new song
+                                        invokeSongChange = true;
+                                        break;
+                                    }
 
-                                    // Request a song change to the new song
-                                    invokeSongChange = true;
-                                    break;
-                                }
+                                    // Shuffle Mode
+                                    case 0x01: {
+                                        // Add some random-selection, never-ending song-playing logic here...
+                                        // ...
+                                        // ...
 
-                                // Repeat Mode
-                                case 0x02: {
-                                    // Simply request a song change without changing the song name
-                                    invokeSongChange = true;
-                                    break;
+                                        // Then change the song name like this...
+                                        strncpy(pFilename, "1:Songs/Despasito.mp3", MAX_FILE_NAME_SIZE);
+                                        pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
+
+                                        // Request a song change to the new song
+                                        invokeSongChange = true;
+                                        break;
+                                    }
+
+                                    // Repeat Mode
+                                    case 0x02: {
+                                        // Simply request a song change without changing the song name
+                                        invokeSongChange = true;
+                                        break;
+                                    }
                                 }
                             }
+                            break;
                         }
-                        break;
                     }
                 }
                 xSemaphoreGive(xStateMutex);
+
                 // After song change, only autoplay the song if the prev song wasn't paused or stopped
                 if (invokeSongChange == true) {
                     invokeSongChange = false;
@@ -757,22 +712,30 @@ void controlUnit (void* p) {
                             } else {
                                 u0_dbg_printf("nope\n");
                             }
-                            vTaskResume(xHandleLcdMenu);
+                            // vTaskResume(xHandleLcdMenu);
                             break;
                         }
 
                         case '5': { //back button
                             button_lcd = 2;
                             xQueueSend(button_pushed, &button_lcd, portMAX_DELAY);
-                            vTaskResume(xHandleLcdMenu);
+                            // vTaskResume(xHandleLcdMenu);
                             break;
                         }
 
                         case '6': { //enter button
                             button_lcd = 3;
+                            // Send the lcd_menu task my request to process the menu option
                             xQueueSend(button_pushed, &button_lcd, portMAX_DELAY);
-                            vTaskResume(xHandleLcdMenu);
+
+                            // Wait for the response packet form the lcd_menu task
                             xQueueReceive(menu_block, &lcd_state, portMAX_DELAY);
+                            #if DBG_CU
+                            u0_dbg_printf("st: %d fn:%s\n", lcd_state.state, lcd_state.filename);
+                            #endif
+
+                            // Signal that an lcd_menu task action has been requested
+                            lcdActionRequest = true;
                             break;
                         }
                         case 'A': { // Increase Volume
@@ -1126,7 +1089,7 @@ void lcd_menu(void *p)
                 else if(button_pressed == 3)
                 {
                     //tells menu to play the song specified by lcd_top_row
-                    sprintf(menu_state.filename, "1:%s\n", lcd_top_row);
+                    sprintf(menu_state.filename, "1:/Songs/%s\n", lcd_top_row);
                     // menu_state.file_offset = offset;
                     xQueueSend(menu_block, &menu_state, portMAX_DELAY);
                 }
@@ -1170,7 +1133,7 @@ void lcd_menu(void *p)
                 else if(button_pressed == 3)         //selecting playlist
                 {
                     //play playlist
-                    sprintf(menu_state.filename, "1:%s\n", lcd_top_row);
+                    sprintf(menu_state.filename, "1:/Playlists/%s\n", lcd_top_row);
                     xQueueSend(menu_block, &menu_state, portMAX_DELAY);
 
                     // f_open(&file, filename, FA_OPEN_EXISTING | FA_READ);
@@ -1226,8 +1189,9 @@ void lcd_menu(void *p)
             default:
                 break;
         }
+
         // have this task suspend itself
-        vTaskSuspend(NULL);
+        // vTaskSuspend(NULL);
     }
 }
 
