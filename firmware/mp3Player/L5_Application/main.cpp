@@ -39,7 +39,7 @@
 #include "printf_lib.h" // u0_dbg_printf()
 #include "adc0.h"       // ADC0 api
 #include "keypad/keypad.h"
-#include <string.h>     // strncpy()
+#include <string.h>     // strncpy(), strncmp()
 /* END RJ's Includes */
 
 //Delwin's includes
@@ -71,7 +71,7 @@
 // Misc Debug Controls
 #define DBG_KEYPAD 0        // enables keypadRead() debug messages
 #define DBG_CU 1            // enables controlUnit() debug messages
-#define DBG_SONGCHANGE 1    // enables changeSong() debug messages
+#define DBG_SONGCHANGE 0    // enables changeSong() debug messages
 /* END RJ's Defines */
 
 FIL file;
@@ -110,7 +110,7 @@ typedef struct{
     char filename[MAX_FILE_NAME_SIZE];
 } menu_packet_t;
 
-char pFilename[MAX_FILE_NAME_SIZE] = "1:Songs/Despasito.mp3";
+char pFilename[MAX_FILE_NAME_SIZE] = "\0";  // start with no song
 
 /* BEGIN RJ's Mutexes */
 SemaphoreHandle_t xKeypadValueMutex = NULL; // for protecting "last_key" and "repeatCnt"
@@ -260,7 +260,7 @@ void initialize(void *p)
                 break;
             }
 
-            int length = sprintf(songname, "1:%s\n", Lfname);
+            int length = sprintf(songname, "1:/Songs/%s\n", Lfname);
             Storage::append("1:songlist.txt", &songname, length);
         }
         f_open(&file, pFilename, FA_OPEN_EXISTING | FA_READ);
@@ -512,6 +512,59 @@ void changeSong () {
     }
 }
 
+// @function    findNextSongInList
+// @parameter   fname - the c-string name of the songlist/playlist file (i.e. "1:file.txt")
+// @parameter   sname - the c-string to store the name of the next song
+// @returns     n/a
+// @details     This function automatically acquires the next song name from a file (list of songs) "fname" and stores it in "sname". It does this by searching for the next newline after the character, since RD mp3 player playlist/songlist files separate song names by newline
+// @note        Both "fname" and "sname" are EXPECTED to be of size MAX_FILE_NAME_SIZE
+void findNextSongInList (char* fname, char* sname) {
+    static char currentSongList[MAX_FILE_NAME_SIZE] = "1:songlist.txt";  // initially track
+    static uint32_t fileOffset = 0;
+
+    // If fname is null, use the current song list
+    if (fname == NULL) {
+        // Do nothing
+    }
+
+    // Else, see if the passed file name is DIFFERENT from the current song list. If it is, close the old one and open the new one.
+    else if (strncmp(fname, currentSongList, MAX_FILE_NAME_SIZE) != 0) {
+        strncpy(currentSongList, fname, MAX_FILE_NAME_SIZE);
+        currentSongList[MAX_FILE_NAME_SIZE - 1] = '\0'; // ensure last char is a null terminator
+        fileOffset = 0;
+    }
+
+    // Read for next newline or null terminator
+    int i;
+    for (i = 0; i < MAX_FILE_NAME_SIZE; i++) {
+        char temp = '\0';
+        Storage::read(currentSongList, &temp, 1, fileOffset);
+
+        switch ((int) temp) {
+            case 10: {  // "\n"
+                sname[i] = '\0';    // end new song name here...
+                i = MAX_FILE_NAME_SIZE; // simply leave the for loop
+                break;
+            }
+            case 0: {   // "\0"
+                strncpy(currentSongList, "1:songlist.txt", MAX_FILE_NAME_SIZE); // If end of file, return to song list and start over
+                fileOffset = 0;
+                sname[i] = '\0';    // end new song name here...
+                i = MAX_FILE_NAME_SIZE; // simply leave the for loop
+                break;
+            }
+            default: {
+                sname[i] = temp;
+            }
+        }
+
+        fileOffset++;
+    }
+    sname[i] = '\0'; // ensure last char is a null terminator
+
+    return;
+}
+
 // @function    controlUnit
 // @parameter   n/a
 // @returns     n/a
@@ -523,14 +576,22 @@ void controlUnit (void* p) {
     //  01 - shuffle mode (play all songs at random, without end)
     //  10 - repeat mode (repeat the current song over and over)
     static uint8_t cuSettings = 0x00;
-    bool invokeSongChange = false;
-    bool lcdActionRequest = false;
-    menu_packet_t lcd_state;
-    uint8_t button_lcd = 0;
+
+    // Other Settings
+    bool invokeSongChange = false;  // prompts the control unit to execute a song change
+    bool lcdActionRequest = false;  // prompts the control unit to service an lcd action request instead of its own song decision protocol
+    menu_packet_t lcd_state;        // holds the response packet from the lcd_menu task
+    uint8_t button_lcd = 0;         // holds the command number to send to the lcd_menu task
+
+    // Initial setup: acquire the full song list
+    findNextSongInList("1:songlist.txt", pFilename);
 
     // Main control loop
     while (1) {
         vTaskDelay(50);
+        #if DBG_CU
+        u0_dbg_printf("sng: %s\n", pFilename);
+        #endif
 
         // (Contextual) Continuous Playback
         if (xStateMutex != NULL) {
@@ -543,6 +604,11 @@ void controlUnit (void* p) {
                 // If prompted by the user via the lcd_menu task, handle a user request to change the song/play a playlist
                 if (lcdActionRequest) {
                     lcdActionRequest = false;
+
+                    #if DBG_CU
+                    u0_dbg_printf("LCD_ST:%d LCD_FN:%s\n", lcd_state.state, lcd_state.filename);
+                    #endif
+
                     switch (lcd_state.state) {
                         case INITIAL: {
                             // Do nothing
@@ -557,7 +623,8 @@ void controlUnit (void* p) {
                         }
                         case PLAYPLAYLIST: {
                             // User wants to play a playlist
-
+                            findNextSongInList(lcd_state.filename, pFilename);
+                            invokeSongChange = true;
                             break;
                         }
                         case CREATEPLAYLIST: {
@@ -577,13 +644,8 @@ void controlUnit (void* p) {
                                 switch (cuSettings & 0x03) {
                                     // Playthrough Mode (default)
                                     case 0x00: {
-                                        // Add some one-time, alphabetical-order song-playing logic here...
-                                        // ...
-                                        // ...
-
-                                        // Then change the song name like this...
-                                        strncpy(pFilename, "1:Songs/Believer.mp3", MAX_FILE_NAME_SIZE);
-                                        pFilename[MAX_FILE_NAME_SIZE - 1] = '\0';   // ensure last char is a null terminator
+                                        // Keep getting songs from the current song list
+                                        findNextSongInList(NULL, pFilename);
 
                                         // Request a song change to the new song
                                         invokeSongChange = true;
