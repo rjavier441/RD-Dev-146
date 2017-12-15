@@ -561,6 +561,7 @@ void findNextSongInList (char* fname, char* sname) {
         fileOffset++;
     }
     sname[i] = '\0'; // ensure last char is a null terminator
+    u0_dbg_printf("Got it\n");
 
     return;
 }
@@ -965,6 +966,9 @@ void lcd_menu(void *p)
     f_read(&file2, &songname, 32, &bytesRead);
     sscanf(songname, "%s", lcd_top_row);
 
+    static int counter = 0;
+    char tempName[MAX_FILE_NAME_SIZE] = {'\0'};
+
     //extracting the song name
     for(int i = 0; i < 32; i++)
     {
@@ -1081,6 +1085,7 @@ void lcd_menu(void *p)
                     }
                     else if(strcmp(lcd_top_row,"Create_Playlist") == 0)
                     {
+                        counter++;
                         menu_state.state = CREATEPLAYLIST;
                         f_opendir(&dp, "1:/Songs");
                         //clears screen and updates screen
@@ -1240,9 +1245,11 @@ void lcd_menu(void *p)
                 }
                 else if(button_pressed == 3)        //selects a song to add to playlist
                 {
-                    int length = sprintf(songname, "1:%s\n", lcd_top_row);
-                    Storage::append("1:Playlists/playlist1.txt", &songname, length);
+                    int length = sprintf(songname, "1:/Songs/%s\n", lcd_top_row);
+                    sprintf(tempName, "1:/Playlists/playlist%d.txt", counter);
+                    Storage::append(tempName, &songname, length);
                     xQueueSend(menu_block, &menu_state, portMAX_DELAY);
+
                 }
             }
             break;
